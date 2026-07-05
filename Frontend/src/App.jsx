@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Activity, Play, Square, User, Clock, Heart, TrendingUp, 
   AlertTriangle, CheckCircle2, Sliders, FileDown, History, 
-  Settings, Bluetooth, Cpu, RefreshCw, Layers
+  Settings, Bluetooth, Cpu, RefreshCw, Layers, Camera
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
@@ -13,11 +13,10 @@ import './App.css';
 function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isEspConnected, setIsEspConnected] = useState(false);
-  const [simulationMode, setSimulationMode] = useState(true);
   const [selectedTask, setSelectedTask] = useState('Finger Tapping'); // Tapping, Opening/Closing, Resting
   const [selectedHand, setSelectedHand] = useState('Right'); // Right or Left
-  const [selectedTremorType, setSelectedTremorType] = useState('Resting'); // Resting, Postural, Action
-  const [severityLevel, setSeverityLevel] = useState('Moderate'); // Normal, Mild, Moderate, Severe
+  const [selectedTremorType, setSelectedTremorType] = useState('None'); // Resting, Postural, Action, None
+  const [severityLevel, setSeverityLevel] = useState('Normal'); // Normal, Mild, Moderate, Severe
 
   const [patientName, setPatientName] = useState('Sunil Perera');
   const [patientAge, setPatientAge] = useState('62');
@@ -27,37 +26,20 @@ function App() {
   const [currentFreq, setCurrentFreq] = useState(0);
   const [amplitude, setAmplitude] = useState(0);
   const [heartRate, setHeartRate] = useState(72);
-  const [signalQuality, setSignalQuality] = useState(100);
+  const [webcamFrame, setWebcamFrame] = useState(null);
+  const [handDetected, setHandDetected] = useState(false);
+  const [finalStatus, setFinalStatus] = useState("Ready");
 
   const [oscilloscopeData, setOscilloscopeData] = useState([]);
   const [fftData, setFftData] = useState([]);
   const [ppgData, setPpgData] = useState([]);
   const [historySessions, setHistorySessions] = useState([
-    { id: 1, date: '2026-07-04', task: 'Finger Tapping', hand: 'Right', freq: '5.4 Hz', amplitude: '24.2 m/s²', type: 'Resting', severity: 'Moderate' },
-    { id: 2, date: '2026-07-04', task: 'Hand Opening', hand: 'Right', freq: '5.2 Hz', amplitude: '18.5 m/s²', type: 'Postural', severity: 'Mild' },
-    { id: 3, date: '2026-06-20', task: 'Resting Hand', hand: 'Left', freq: '1.8 Hz', amplitude: '1.2 m/s²', type: 'Normal', severity: 'Normal' },
+    { id: 1, date: '2026-07-04', task: 'Finger Tapping', hand: 'Right', freq: '5.4 Hz', amplitude: '12.5 m/s²', type: 'Resting', severity: 'Moderate' },
+    { id: 2, date: '2026-07-04', task: 'Hand Opening', hand: 'Right', freq: '5.2 Hz', amplitude: '3.8 m/s²', type: 'Postural', severity: 'Mild' },
+    { id: 3, date: '2026-06-20', task: 'Resting Hand', hand: 'Left', freq: '1.8 Hz', amplitude: '1.2 m/s²', type: 'None', severity: 'Normal' },
   ]);
 
-  const timerRef = useRef(null);
-  const streamRef = useRef(null);
-
-  const getTargetFrequency = () => {
-    if (severityLevel === 'Normal') return 1.2 + Math.random() * 0.4;
-    if (selectedTremorType === 'Resting') return 4.0 + Math.random() * 1.5; // Parkinsonian rest range: 4-6 Hz
-    if (selectedTremorType === 'Postural') return 8.0 + Math.random() * 3.0; // Essential range: 8-12 Hz
-    return 6.0 + Math.random() * 2.0; // Action range
-  };
-
-  const getTargetAmplitude = () => {
-    switch(severityLevel) {
-      case 'Normal': return 0.5 + Math.random() * 0.8;
-      case 'Mild': return 5.0 + Math.random() * 4.0;
-      case 'Moderate': return 18.0 + Math.random() * 8.0;
-      case 'Severe': return 42.0 + Math.random() * 15.0;
-      default: return 0.5;
-    }
-  };
-
+  const wsRef = useRef(null);
   useEffect(() => {
     const initOsc = [];
     const initFft = [];
@@ -68,126 +50,183 @@ function App() {
     }
     for (let f = 0; f < 30; f++) {
       const hz = (f * 0.5).toFixed(1);
-      initFft.push({ freq: hz, amp: f === 2 ? 0.8 : 0.05 + Math.random() * 0.1 });
+      initFft.push({ freq: `${hz}Hz`, amp: 0.05 + Math.random() * 0.05 });
     }
     setOscilloscopeData(initOsc);
     setFftData(initFft);
     setPpgData(initPpg);
   }, []);
+  const formatTime = (timeInSeconds) => {
+    const mins = Math.floor(timeInSeconds / 60);
+    const secs = Math.floor(timeInSeconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
-  useEffect(() => {
-    if (isPlaying) {
-      timerRef.current = setInterval(() => {
-        setTimer(prev => prev + 1);
-      }, 1000);
-      let tick = 0;
-      streamRef.current = setInterval(() => {
-        tick++;
-        const targetFreq = getTargetFrequency();
-        const targetAmp = getTargetAmplitude();
+  const handleStartSession = () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
 
-        setCurrentFreq(Number(targetFreq.toFixed(2)));
-        setAmplitude(Number(targetAmp.toFixed(2)));
-        setHeartRate(Math.floor(70 + Math.sin(tick / 20) * 5 + (severityLevel === 'Severe' ? 12 : 0)));
-        setSignalQuality(Math.floor(95 + Math.random() * 5));
+    setTimer(0);
+    setFinalStatus("Acquiring Live Streams...");
+    const ws = new WebSocket('ws://localhost:8000/ws');
+    wsRef.current = ws;
+    setIsPlaying(true);
 
+    ws.onopen = () => {
+      console.log("[WebSocket] Connected to backend");
+      // Request backend to start camera frame capture
+      ws.send(JSON.stringify({
+        action: "start",
+        task: selectedTask,
+        hand: selectedHand,
+        tremorType: selectedTremorType,
+        severity: severityLevel
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      if (data.event === "hardware_status") {
+        setIsEspConnected(data.connected);
+      } 
+      
+      else if (data.event === "data") {
+        setWebcamFrame(data.frame);
+        setHandDetected(data.hand_detected);
+        setTimer(data.elapsed);
+        setCurrentFreq(data.live_frequency);
+        setAmplitude(data.live_amplitude);
+        
+        if (data.live_severity) {
+          setSeverityLevel(data.live_severity);
+        }
+        if (data.live_frequency >= 4.0 && data.live_frequency <= 6.0) {
+          setSelectedTremorType('Resting');
+        } else if (data.live_frequency >= 8.0 && data.live_frequency <= 12.0) {
+          setSelectedTremorType('Postural');
+        } else if (data.live_frequency >= 6.0 && data.live_frequency < 8.0) {
+          setSelectedTremorType('Action');
+        } else if (data.live_frequency > 0) {
+          setSelectedTremorType('Physiological');
+        } else {
+          setSelectedTremorType('None');
+        }
+        const rawPpg = data.ppg;
+        setHeartRate(Math.floor(70 + (rawPpg % 15)));
         setOscilloscopeData(prev => {
           const slice = prev.slice(-39);
-          const rad = (tick * targetFreq * Math.PI) / 15;
-          const noise = (Math.random() - 0.5) * (targetAmp * 0.15);
-          const tremorX = Math.sin(rad) * targetAmp + noise;
-          const tremorY = Math.cos(rad * 0.9) * (targetAmp * 0.8) + noise;
-          const tremorZ = Math.sin(rad * 1.2) * (targetAmp * 0.6) + noise;
-
           return [...slice, {
-            time: tick,
-            x: Number(tremorX.toFixed(2)),
-            y: Number(tremorY.toFixed(2)),
-            z: Number(tremorZ.toFixed(2))
+            time: data.elapsed,
+            x: data.imu.x,
+            y: data.imu.y,
+            z: data.imu.z
           }];
         });
-
+        setPpgData(prev => {
+          const slice = prev.slice(-39);
+          return [...slice, {
+            time: data.elapsed,
+            val: rawPpg
+          }];
+        });
         setFftData(() => {
           const newFft = [];
-          const peakHz = Number(targetFreq.toFixed(1));
-          
+          const peakHz = data.live_frequency;
           for (let f = 0; f < 30; f++) {
             const hz = (f * 0.5).toFixed(1);
             let amp = 0.02 + Math.random() * 0.08;
             
             const dist = Math.abs(parseFloat(hz) - peakHz);
-            if (dist < 0.3) {
-              amp += targetAmp * 1.2;
-            } else if (dist < 0.8) {
-              amp += targetAmp * 0.3;
-            } else if (dist < 1.5) {
-              amp += targetAmp * 0.08;
+            if (dist < 0.3 && peakHz > 0) {
+              amp += data.live_amplitude * 1.1;
+            } else if (dist < 0.8 && peakHz > 0) {
+              amp += data.live_amplitude * 0.25;
             }
-            
-            if (parseFloat(hz) === 1.0) {
-              amp += 0.8;
-            }
-
             newFft.push({ freq: `${hz}Hz`, amp: Number(amp.toFixed(2)) });
           }
           return newFft;
         });
+      } 
+      
+      else if (data.event === "completed") {
+        console.log("[WebSocket] Capture complete");
+        setIsPlaying(false);
+        setWebcamFrame(null);
+        setHandDetected(false);
+        setFinalStatus("Test Complete!");
 
-        setPpgData(prev => {
-          const slice = prev.slice(-39);
-          const ppgRad = (tick * 1.3 * Math.PI) / 10;
-          const pulse = Math.sin(ppgRad) > 0.7 ? 100 : Math.sin(ppgRad) < -0.6 ? 20 : 50;
-          const ppgVal = pulse + (Math.random() - 0.5) * 5;
-          return [...slice, { time: tick, val: Math.floor(ppgVal) }];
-        });
+        setCurrentFreq(data.final_frequency);
+        setAmplitude(data.final_amplitude);
+        
+        const finalSeverity = data.severity || "Normal";
+        setSeverityLevel(finalSeverity);
 
-      }, 100);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (streamRef.current) clearInterval(streamRef.current);
-    }
+        let finalType = 'None';
+        const finalFreq = data.final_frequency;
+        if (finalFreq >= 4.0 && finalFreq <= 6.0) {
+          finalType = 'Resting';
+        } else if (finalFreq >= 8.0 && finalFreq <= 12.0) {
+          finalType = 'Postural';
+        } else if (finalFreq >= 6.0 && finalFreq < 8.0) {
+          finalType = 'Action';
+        } else if (finalFreq > 0) {
+          finalType = 'Physiological';
+        }
+        setSelectedTremorType(finalType);
+        const newSession = {
+          id: Date.now(),
+          date: new Date().toISOString().slice(0, 10),
+          task: selectedTask,
+          hand: selectedHand,
+          freq: `${data.final_frequency.toFixed(2)} Hz`,
+          amplitude: `${data.final_amplitude.toFixed(2)} m/s²`,
+          type: finalType,
+          severity: finalSeverity
+        };
+        setHistorySessions(prev => [newSession, ...prev]);
+        
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
+      }
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (streamRef.current) clearInterval(streamRef.current);
+      else if (data.event === "error") {
+        alert("Backend Error: " + data.message);
+        setIsPlaying(false);
+      }
     };
-  }, [isPlaying, selectedTremorType, severityLevel]);
 
-  const formatTime = (timeInSeconds) => {
-    const mins = Math.floor(timeInSeconds / 60);
-    const secs = timeInSeconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+    ws.onerror = (err) => {
+      console.error("[WebSocket] error: ", err);
+      alert("Failed to connect to backend server. Make sure run.py is running on port 8000!");
+      setIsPlaying(false);
+    };
 
-  const handleStartSession = () => {
-    setIsPlaying(true);
+    ws.onclose = () => {
+      console.log("[WebSocket] Connection closed");
+      setIsPlaying(false);
+      setWebcamFrame(null);
+    };
   };
 
   const handleStopSession = () => {
-    setIsPlaying(false);
-
-    if (timer > 0) {
-      const newSession = {
-        id: historySessions.length + 1,
-        date: new Date().toISOString().slice(0,10),
-        task: selectedTask,
-        hand: selectedHand,
-        freq: `${currentFreq} Hz`,
-        amplitude: `${amplitude} m/s²`,
-        type: selectedTremorType,
-        severity: severityLevel
-      };
-      setHistorySessions(prev => [newSession, ...prev]);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: "stop" }));
     }
+    setIsPlaying(false);
+    setWebcamFrame(null);
   };
 
   const handleResetSession = () => {
-    setIsPlaying(false);
+    handleStopSession();
     setTimer(0);
     setCurrentFreq(0);
     setAmplitude(0);
+    setFinalStatus("Ready");
   };
-
   const getSeverityColor = (sev) => {
     switch (sev) {
       case 'Normal': return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
@@ -226,8 +265,8 @@ function App() {
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-3">
             <div className="status-pill-webcam">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 mr-2 animate-pulse"></span>
-              Webcam (MediaPipe) Active
+              <span className={`h-2.5 w-2.5 rounded-full mr-2 ${isPlaying ? 'bg-emerald-500 animate-pulse' : 'bg-slate-650'}`}></span>
+              Webcam (MediaPipe): {isPlaying ? 'Active' : 'Standby'}
             </div>
             <button 
               onClick={() => setIsEspConnected(prev => !prev)}
@@ -238,7 +277,7 @@ function App() {
               }`}
             >
               <Bluetooth className={`h-3.5 w-3.5 mr-1.5 ${isEspConnected ? 'animate-bounce' : ''}`} />
-              Hardware (ESP32): {isEspConnected ? 'Connected' : 'Simulating'}
+              Hardware (ESP32): {isEspConnected ? 'Connected' : 'Simulated'}
             </button>
           </div>
 
@@ -338,44 +377,34 @@ function App() {
               </div>
               <div className="preset-box">
                 <div className="preset-header">
-                  <span>Showcase Parameters</span>
-                  <span className="text-[10px] text-amber-500 bg-amber-950/30 border border-amber-800/30 px-1.5 py-0.5 rounded">SIMULATOR</span>
+                  <span>Automated Diagnostic Engine</span>
+                  <span className="text-[10px] text-emerald-500 bg-emerald-950/30 border border-emerald-800/30 px-1.5 py-0.5 rounded">AUTO CLASSIFIER</span>
                 </div>
                 
-                <div className="space-y-3">
-                  <div>
-                    <label className="preset-label">Tremor Classification</label>
-                    <select 
-                      value={selectedTremorType}
-                      onChange={(e) => setSelectedTremorType(e.target.value)}
-                      className="preset-select"
-                    >
-                      <option value="Resting">Resting Tremor (Parkinsonian 4-6 Hz)</option>
-                      <option value="Postural">Postural Tremor (Essential 8-12 Hz)</option>
-                      <option value="Action">Action Tremor (Intention 6-8 Hz)</option>
-                    </select>
+                <div className="space-y-3 text-xs mt-2">
+                  <div className="flex justify-between items-center py-1 border-b border-slate-800/50">
+                    <span className="text-slate-400">Classified Tremor Type:</span>
+                    <span className="font-semibold text-cyan-400">{selectedTremorType} Tremor</span>
                   </div>
 
-                  <div>
-                    <label className="preset-label">Severity Preset</label>
-                    <div className="grid grid-cols-4 gap-1">
-                      {['Normal', 'Mild', 'Moderate', 'Severe'].map(sev => (
-                        <button
-                          key={sev}
-                          onClick={() => setSeverityLevel(sev)}
-                          className={severityLevel === sev ? 'preset-btn-active' : 'preset-btn-inactive'}
-                        >
-                          {sev}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="flex justify-between items-center py-1 border-b border-slate-800/50">
+                    <span className="text-slate-400">Current Severity:</span>
+                    <span className={`font-semibold ${
+                      severityLevel === 'Severe' ? 'text-red-500' :
+                      severityLevel === 'Moderate' ? 'text-amber-500' :
+                      severityLevel === 'Mild' ? 'text-cyan-400' : 'text-emerald-400'
+                    }`}>{severityLevel}</span>
                   </div>
-                </div>
+                  
+                  <p className="text-[10px] text-slate-500 leading-snug pt-1">
+                    Vibration classification and severity are automatically computed in real-time by the DSP pipeline based on MediaPipe hand tracking frequency and vibration amplitude.
+                  </p>
+                 </div>
               </div>
             </div>
             <div className="space-y-3 pt-5 border-t border-slate-800 mt-6">
               {!isPlaying ? (
-                <button onClick={handleStartSession} className="start-btn">
+                <button onClick={handleStartSession} className="start-btn animate-pulse">
                   <Play className="h-5 w-5 fill-current" />
                   <span>Start Live Session</span>
                 </button>
@@ -394,29 +423,26 @@ function App() {
           </div>
         </section>
         <section className="col-main">
-          
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            
             <div className="kpi-card">
               <div className="space-y-1">
                 <span className="text-[11px] text-slate-400 uppercase font-mono tracking-wider block">Current Frequency</span>
                 <span className="kpi-val-cyan text-cyan-400">
-                  {isPlaying ? `${currentFreq.toFixed(1)} Hz` : '0.0 Hz'}
+                  {currentFreq > 0 ? `${currentFreq.toFixed(1)} Hz` : '0.0 Hz'}
                 </span>
                 <span className="text-[10px] text-slate-500 block">
-                  {isPlaying && currentFreq >= 4 && currentFreq <= 6 ? 'Parkinsonian Range' : isPlaying && currentFreq > 0 ? 'Physiological/Normal' : 'Ready'}
+                  {currentFreq >= 4 && currentFreq <= 6 ? 'Parkinsonian Range' : currentFreq > 0 ? 'Physiological/Normal' : 'Ready'}
                 </span>
               </div>
               <div className="bg-cyan-500/10 p-2.5 rounded-lg border border-cyan-500/20">
                 <Activity className="h-5 w-5 text-cyan-400" />
               </div>
             </div>
-
             <div className="kpi-card">
               <div className="space-y-1">
                 <span className="text-[11px] text-slate-400 uppercase font-mono tracking-wider block">Tremor Intensity</span>
                 <span className="kpi-val-emerald text-emerald-400">
-                  {isPlaying ? `${amplitude.toFixed(1)} m/s²` : '0.0 m/s²'}
+                  {amplitude > 0 ? `${amplitude.toFixed(1)} m/s²` : '0.0 m/s²'}
                 </span>
                 <span className="text-[10px] text-slate-500 block">RMS Amplitude</span>
               </div>
@@ -430,7 +456,7 @@ function App() {
                 <span className="kpi-val-amber text-amber-500">
                   {formatTime(timer)}
                 </span>
-                <span className="text-[10px] text-slate-500 block">Target: 02:00 mins</span>
+                <span className="text-[10px] text-slate-500 block">Target: 10s Capture</span>
               </div>
               <div className="bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
                 <Clock className="h-5 w-5 text-amber-500" />
@@ -438,46 +464,55 @@ function App() {
             </div>
           </div>
           <div className="chart-card">
-            <div className="chart-header-row">
-              <div className="flex items-center space-x-2">
-                <span className="h-2 w-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <h3 className="font-semibold text-slate-200">Real-Time Oscilloscope Stream</h3>
-              </div>
-              
-              <div className="flex items-center space-x-2 text-xs">
-                <span className="flex items-center space-x-1 text-[11px] text-cyan-400 font-medium">
-                  <span className="h-1.5 w-6 bg-cyan-400/80 inline-block rounded-sm mr-1"></span>
-                  X-Axis (Vibration)
-                </span>
-                <span className="flex items-center space-x-1 text-[11px] text-emerald-400 font-medium ml-3">
-                  <span className="h-1.5 w-6 bg-emerald-400/80 inline-block rounded-sm mr-1"></span>
-                  Y-Axis (Tapping)
-                </span>
-              </div>
-            </div>
-            <div className="osc-screen">
-              {!isPlaying && (
-                <div className="osc-pause-overlay">
-                  <Play className="h-8 w-8 text-cyan-400/50 mb-2 animate-pulse" />
-                  <p className="text-sm font-semibold text-slate-350">Signal Stream Paused</p>
-                  <p className="text-xs text-slate-500 mt-1">Start session to stream live MPU6050 & MediaPipe data</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-350 flex items-center space-x-1.5">
+                    <Camera className="h-4 w-4 text-cyan-400" />
+                    <span>Live MediaPipe feed</span>
+                  </span>
+                  {isPlaying && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${handDetected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                      {handDetected ? 'HAND DETECTED' : 'HAND LOST'}
+                    </span>
+                  )}
                 </div>
-              )}
-              
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={oscilloscopeData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1c2541" />
-                  <XAxis dataKey="time" hide />
-                  <YAxis domain={['auto', 'auto']} stroke="#475569" fontSize={10} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#0b132b', border: '1px solid #1e293b', borderRadius: 8, color: '#cbd5e1' }}
-                    labelFormatter={() => 'Sample'}
-                  />
-                  <Line type="monotone" dataKey="x" stroke="#06b6d4" strokeWidth={1.8} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="y" stroke="#10b981" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="z" stroke="#a855f7" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
+
+                <div className="h-[210px] w-full bg-[#070b19]/90 border border-slate-800 rounded-lg overflow-hidden flex items-center justify-center relative">
+                  {isPlaying && webcamFrame ? (
+                    <img src={webcamFrame} alt="Webcam Processing" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="text-center p-4">
+                      <Camera className="h-10 w-10 text-slate-700 mx-auto mb-2" />
+                      <p className="text-xs text-slate-500">Webcam Stream Standby</p>
+                      <p className="text-[10px] text-slate-650 mt-1">Status: {finalStatus}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col space-y-2">
+                <span className="text-xs font-semibold text-slate-350 flex items-center space-x-1">
+                  <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse mr-1"></span>
+                  <span>Vibration Oscilloscope</span>
+                </span>
+                
+                <div className="h-[210px] w-full bg-[#070b19]/60 border border-slate-800 rounded-lg p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={oscilloscopeData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1c2541" />
+                      <XAxis dataKey="time" hide />
+                      <YAxis domain={['auto', 'auto']} stroke="#475569" fontSize={9} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#0b132b', border: '1px solid #1e293b', borderRadius: 8, color: '#cbd5e1' }}
+                        labelFormatter={() => 'Sample'}
+                      />
+                      <Line type="monotone" dataKey="x" stroke="#06b6d4" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                      <Line type="monotone" dataKey="y" stroke="#10b981" strokeWidth={1.2} dot={false} isAnimationActive={false} />
+                      <Line type="monotone" dataKey="z" stroke="#a855f7" strokeWidth={0.8} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             </div>
             <div>
               <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
@@ -489,21 +524,15 @@ function App() {
               </div>
 
               <div className="fft-screen">
-                {!isPlaying && (
-                  <div className="absolute inset-0 bg-[#070b19]/90 backdrop-blur-[1px] flex items-center justify-center z-10">
-                    <p className="text-xs text-slate-500">FFT spectrum calculated in real-time</p>
-                  </div>
-                )}
-                
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={fftData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1c2541" />
-                    <XAxis dataKey="freq" stroke="#475569" fontSize={9} tickLine={false} />
-                    <YAxis stroke="#475569" fontSize={9} />
+                    <XAxis dataKey="freq" stroke="#475569" fontSize={8} tickLine={false} />
+                    <YAxis stroke="#475569" fontSize={8} />
                     <Tooltip 
                       contentStyle={{ backgroundColor: '#0b132b', border: '1px solid #1e293b', borderRadius: 8, color: '#cbd5e1' }}
                     />
-                    <Bar dataKey="amp" fill="#8b5cf6" radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                    <Bar dataKey="amp" fill="#8b5cf6" radius={[1, 1, 0, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -573,7 +602,7 @@ function App() {
                 )}
                 {severityLevel === 'Moderate' && (
                   <p className="text-slate-400 leading-normal text-[11px]">
-                    Moderate tremor patterns observed at <span className="text-amber-500 font-semibold">{currentFreq} Hz</span>. Tapping rhythm shows slight amplitude decrease (decrescendo).
+                    Moderate tremor patterns observed. Tapping rhythm shows slight amplitude decrease (decrescendo).
                   </p>
                 )}
                 {severityLevel === 'Severe' && (
@@ -616,7 +645,6 @@ function App() {
                 ))}
               </div>
             </div>
-
             <div className="ppg-container">
               <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
                 <div className="flex items-center space-x-1.5">
@@ -642,7 +670,7 @@ function App() {
               </div>
             </div>
             <button 
-              onClick={() => alert(`Report successfully generated for ${patientName} (${patientID})!\n- Current Task: ${selectedTask}\n- Frequency: ${currentFreq} Hz\n- Tremor Severity: ${severityLevel}\n- Hardware status: ${isEspConnected ? 'Sensor Connected' : 'Simulated'}`)}
+              onClick={() => alert(`Report successfully generated for ${patientName} (${patientID})!\n- Current Task: ${selectedTask}\n- Frequency: ${currentFreq} Hz\n- Tremor Severity: ${severityLevel}\n- Hardware status: ${isEspConnected ? 'Sensor Connected' : 'Simulating'}`)}
               className="export-btn"
             >
               <FileDown className="h-4 w-4 text-cyan-400" />
@@ -653,7 +681,6 @@ function App() {
         </section>
 
       </main>
-
       <footer className="footer-layout">
         <p>VisionPark Screening Tool - Educational Research Prototype (IEEE Young Protégé 2026 update)</p>
         <p className="mt-1 md:mt-0 text-amber-500 bg-amber-950/20 px-2 py-0.5 rounded border border-amber-900/30">

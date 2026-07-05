@@ -1,0 +1,7 @@
+[     637ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=4e48d891:14335
+[   11433ms] [LOG] [WebSocket] Connected to backend @ http://localhost:5173/src/App.jsx?t=1783224782721:111
+[   24549ms] [LOG] [WebSocket] Capture complete @ http://localhost:5173/src/App.jsx?t=1783224782721:175
+[   25071ms] [LOG] [WebSocket] Connection closed @ http://localhost:5173/src/App.jsx?t=1783224782721:209
+[   29545ms] [LOG] [WebSocket] Connected to backend @ http://localhost:5173/src/App.jsx?t=1783224782721:111
+[   42978ms] [LOG] [WebSocket] Capture complete @ http://localhost:5173/src/App.jsx?t=1783224782721:175
+[   43520ms] [LOG] [WebSocket] Connection closed @ http://localhost:5173/src/App.jsx?t=1783224782721:209

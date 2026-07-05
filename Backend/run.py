@@ -1,13 +1,30 @@
 import cv2
 import numpy as np
 import time
+import json
+import base64
+import asyncio
+import threading
 from scipy.signal import butter, filtfilt
 import mediapipe as mp
+import serial
+import serial.tools.list_ports
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
+app = FastAPI(title="VisionPark Backend")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 RECORD_TIME = 10.0 
 TARGET_FPS = 30.0
-TOTAL_FRAMES = int(RECORD_TIME * TARGET_FPS)
+dt = 1.0 / TARGET_FPS
 
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
@@ -17,6 +34,66 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.5
 )
 mp_draw = mp.solutions.drawing_utils
+class SerialSensorReader:
+    def __init__(self):
+        self.ser = None
+        self.running = False
+        self.latest_imu = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.latest_ppg = 50
+        self.thread = None
+
+    def find_esp32_port(self):
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            if "CP210" in port.description or "CH340" in port.description or "USB" in port.description:
+                return port.device
+        return None
+
+    def start(self):
+        port = self.find_esp32_port()
+        if not port:
+            print("[Hardware] No ESP32/USB Serial device detected. Falling back to software simulation.")
+            return False
+        
+        try:
+            self.ser = serial.Serial(port, 115200, timeout=0.1)
+            self.running = True
+            self.thread = threading.Thread(target=self._read_loop, daemon=True)
+            self.thread.start()
+            print(f"[Hardware] Connected to ESP32 on port {port}")
+            return True
+        except Exception as e:
+            print(f"[Hardware] Failed to open serial port {port}: {e}")
+            return False
+
+    def _read_loop(self):
+        while self.running and self.ser and self.ser.is_open:
+            try:
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    if line.startswith("IMU:") or "|" in line:
+                        parts = line.split("|")
+                        for part in parts:
+                            if part.startswith("IMU:"):
+                                vals = part.replace("IMU:", "").split(",")
+                                if len(vals) >= 3:
+                                    self.latest_imu = {
+                                        "x": float(vals[0]),
+                                        "y": float(vals[1]),
+                                        "z": float(vals[2])
+                                    }
+                            elif part.startswith("PPG:"):
+                                self.latest_ppg = int(part.replace("PPG:", ""))
+            except Exception as e:
+                pass
+
+    def stop(self):
+        self.running = False
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+        self.ser = None
+
+serial_reader = SerialSensorReader()
 
 def detect_hand_mediapipe(frame):
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -41,9 +118,12 @@ def butter_lowpass_filter(data, cutoff, fs, order=4):
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     y = filtfilt(b, a, data)
     return y
+
 def analyze_tremor(time_series, timestamps):
+    if len(time_series) < 20:
+        return 0.0, 0.0, "Normal / Insufficient Data", "Normal"
+        
     t_uniform = np.linspace(timestamps[0], timestamps[-1], len(timestamps))
-    dt = 1.0 / TARGET_FPS
 
     x_coords = np.array([pt[0] for pt in time_series])
     y_coords = np.array([pt[1] for pt in time_series])
@@ -57,29 +137,43 @@ def analyze_tremor(time_series, timestamps):
     displacement = np.sqrt(x_detrend**2 + y_detrend**2)
     
     fs = TARGET_FPS
-    filtered_signal = butter_lowpass_filter(displacement, cutoff=12.0, fs=fs, order=2)
-    
-    window = np.hanning(len(filtered_signal))
-    windowed_signal = filtered_signal * window
-    
-    n = len(windowed_signal)
-    fft_vals = np.fft.fft(windowed_signal)
-    fft_freqs = np.fft.fftfreq(n, d=dt)
-    
-    pos_mask = fft_freqs >= 0
-    freqs = fft_freqs[pos_mask]
-    magnitude = np.abs(fft_vals[pos_mask])
-
-    valid_mask = freqs >= 1.5
-    valid_freqs = freqs[valid_mask]
-    valid_mag = magnitude[valid_mask]
-    
-    if len(valid_freqs) == 0:
-        return 0.0, 0.0, "Normal"
+    try:
+        filtered_signal = butter_lowpass_filter(displacement, cutoff=12.0, fs=fs, order=2)
+        window = np.hanning(len(filtered_signal))
+        windowed_signal = filtered_signal * window
         
-    peak_idx = np.argmax(valid_mag)
-    dominant_frequency = valid_freqs[peak_idx]
-    peak_amplitude = valid_mag[peak_idx]
+        n = len(windowed_signal)
+        fft_vals = np.fft.fft(windowed_signal)
+        fft_freqs = np.fft.fftfreq(n, d=dt)
+        
+        pos_mask = fft_freqs >= 0
+        freqs = fft_freqs[pos_mask]
+        magnitude = np.abs(fft_vals[pos_mask])
+        
+        valid_mask = freqs >= 1.5
+        valid_freqs = freqs[valid_mask]
+        valid_mag = magnitude[valid_mask]
+        
+        if len(valid_freqs) == 0:
+            return 0.0, 0.0, "Normal", "Normal"
+            
+        peak_idx = np.argmax(valid_mag)
+        dominant_frequency = valid_freqs[peak_idx]
+        peak_amplitude = valid_mag[peak_idx]
+    except Exception as e:
+        print(f"DSP Error: {e}")
+        return 0.0, 0.0, "Normal / Calculation Error", "Normal"
+    scaled_amp = peak_amplitude * 100
+    
+    # Calculate severity based on standard rule
+    if dominant_frequency < 3.0 or scaled_amp < 1.5:
+        severity = "Normal"
+    elif 1.5 <= scaled_amp < 5.0:
+        severity = "Mild"
+    elif 5.0 <= scaled_amp <= 15.0:
+        severity = "Moderate"
+    else:
+        severity = "Severe"
     
     if 4.0 <= dominant_frequency <= 6.0:
         category = "Parkinsonian Rest Tremor Range (4-6 Hz)"
@@ -88,116 +182,146 @@ def analyze_tremor(time_series, timestamps):
     else:
         category = "Normal / Low Activity"
         
-    return dominant_frequency, peak_amplitude, category
+    return float(dominant_frequency), float(scaled_amp), category, severity
 
-def main():
-    cap = cv2.VideoCapture(0)
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("[WS] Client connected")
     
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    
-    print("====================================================")
-    print("  Webcam-Based Tremor Screening System (Prototype) ")
-    print("====================================================")
-    print("Instructions:")
-    print("1. Stretch your hand in front of the camera (Postural Test).")
-    print("2. Keep your hand as still as possible.")
-    print("3. Press 'S' to start the 10-second capture.")
-    print("4. Press 'Q' to quit anytime.")
-    print("====================================================")
-    
+    cap = None
     recording = False
-    start_time = 0
     
-    coordinate_history = []
-    timestamp_history = []
-    
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame.")
-            break
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
             
-        frame = cv2.flip(frame, 1)
-        h, w, c = frame.shape
-        
-        hand_landmarks, finger_tip = detect_hand_mediapipe(frame)
-        
-        hand_detected = False
-        
-        cv2.putText(frame, "Press 'S' to Start | Press 'Q' to Quit", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        if finger_tip is not None:
-            hand_detected = True
-            cx, cy = finger_tip[0], finger_tip[1]
+            action = message.get("action")
             
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            
-            cv2.circle(frame, (cx, cy), 8, (0, 0, 255), -1)
-
-            if recording:
-                current_time = time.time()
-                elapsed = current_time - start_time
+            if action == "start":
+                hw_connected = serial_reader.start()
+                await websocket.send_json({
+                    "event": "hardware_status",
+                    "connected": hw_connected
+                })
                 
-                coordinate_history.append((cx / w, cy / h))
-                timestamp_history.append(elapsed)
+                cap = cv2.VideoCapture(0)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 
-                cv2.circle(frame, (30, 70), 10, (0, 0, 255), -1)
-                cv2.putText(frame, f"RECORDING: {elapsed:.1f}s / {RECORD_TIME}s", (50, 75),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                            
-                if elapsed >= RECORD_TIME:
-                    recording = False
-                    print("\nRecording complete! Processing data...")
-                    
-                    if len(coordinate_history) > 50:
-                        freq, amp, result = analyze_tremor(coordinate_history, timestamp_history)
-                        print("\n--- RESULTS ---")
-                        print(f"Dominant Frequency: {freq:.2f} Hz")
-                        print(f"Signal Amplitude: {amp:.5f}")
-                        print(f"Category: {result}")
-                        print("---------------\n")
-                        
-                        cv2.rectangle(frame, (50, 150), (590, 350), (0, 0, 0), -1)
-                        cv2.putText(frame, "TEST COMPLETED", (70, 190),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-                        cv2.putText(frame, f"Peak Freq: {freq:.2f} Hz", (70, 240),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                        cv2.putText(frame, f"Diagnosis: {result}", (70, 290),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        cv2.imshow('Tremor Analyzer', frame)
-                        cv2.waitKey(4000)
-                    else:
-                        print("Not enough frames recorded for reliable analysis.")
-                        
-                    coordinate_history = []
-                    timestamp_history = []
-            else:
-                cv2.putText(frame, "Hand Detected - Ready", (10, 75),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        else:
-            if recording:
-                cv2.putText(frame, "WARNING: Hand Lost!", (10, 75),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            else:
-                cv2.putText(frame, "No Hand Detected", (10, 75),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        cv2.imshow('Tremor Analyzer', frame)
-        
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('s') or key == ord('S'):
-            if not recording and hand_detected:
+                if not cap.isOpened():
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": "Could not open webcam."
+                    })
+                    continue
+                
                 recording = True
                 start_time = time.time()
                 coordinate_history = []
                 timestamp_history = []
-                print("Recording started...")
-        elif key == ord('q') or key == ord('Q'):
-            break
-            
-    cap.release()
-    cv2.destroyAllWindows()
+                
+                print("[WS] Started live webcam session")
+                while recording and cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("[WS] Failed to capture frame")
+                        break
+                        
+                    frame = cv2.flip(frame, 1)
+                    h, w, c = frame.shape
+                    
+                    hand_landmarks, finger_tip = detect_hand_mediapipe(frame)
+                    
+                    hand_detected = False
+                    cx, cy = 0, 0
+                    
+                    if finger_tip is not None:
+                        hand_detected = True
+                        cx, cy = finger_tip[0], finger_tip[1]
+                        mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                        cv2.circle(frame, (cx, cy), 8, (0, 0, 255), -1)
+                    
+                    current_time = time.time()
+                    elapsed = current_time - start_time
+
+                    if hand_detected:
+                        coordinate_history.append((cx / w, cy / h))
+                        timestamp_history.append(elapsed)
+                    
+                    imu_data = serial_reader.latest_imu
+                    ppg_data = serial_reader.latest_ppg
+
+                    live_freq = 0.0
+                    live_amp = 0.0
+                    live_severity = "Normal"
+                    if len(coordinate_history) > 15:
+                        try:
+                            recent_coords = coordinate_history[-30:]
+                            recent_times = timestamp_history[-30:]
+                            live_freq, live_amp, _, live_severity = analyze_tremor(recent_coords, recent_times)
+                        except Exception:
+                            pass
+                    _, buffer = cv2.imencode('.jpg', frame)
+                    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    await websocket.send_json({
+                        "event": "data",
+                        "frame": f"data:image/jpeg;base64,{frame_base64}",
+                        "hand_detected": hand_detected,
+                        "elapsed": round(elapsed, 1),
+                        "live_frequency": round(live_freq, 1),
+                        "live_amplitude": round(live_amp, 1),
+                        "live_severity": live_severity,
+                        "imu": imu_data,
+                        "ppg": ppg_data
+                    })
+                    if elapsed >= RECORD_TIME:
+                        recording = False
+                        break
+                    await asyncio.sleep(0.033)
+                print("[WS] Session capture complete, processing...")
+                if len(coordinate_history) > 30:
+                    final_freq, final_amp, category, severity = analyze_tremor(coordinate_history, timestamp_history)
+                else:
+                    final_freq, final_amp, category, severity = 0.0, 0.0, "No Hand Detected / Insufficient Data", "Normal"
+                    
+                await websocket.send_json({
+                    "event": "completed",
+                    "final_frequency": round(final_freq, 2),
+                    "final_amplitude": round(final_amp, 2),
+                    "category": category,
+                    "severity": severity
+                })
+                if cap:
+                    cap.release()
+                    cap = None
+                serial_reader.stop()
+                
+            elif action == "stop":
+                print("[WS] Session stopped by user command")
+                recording = False
+                if cap:
+                    cap.release()
+                    cap = None
+                serial_reader.stop()
+                await websocket.send_json({
+                    "event": "stopped"
+                })
+                
+    except WebSocketDisconnect:
+        print("[WS] Client disconnected")
+    except Exception as e:
+        print(f"[WS] Error in socket handler: {e}")
+    finally:
+        if cap:
+            cap.release()
+        serial_reader.stop()
+
+@app.get("/")
+def read_root():
+    return {"status": "VisionPark Backend Active", "port": 8000}
+
 if __name__ == "__main__":
-    main()
+    uvicorn.run("run:app", host="127.0.0.1", port=8000, reload=True)
