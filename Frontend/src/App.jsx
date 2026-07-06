@@ -18,9 +18,9 @@ function App() {
   const [selectedTremorType, setSelectedTremorType] = useState('None'); // Resting, Postural, Action, None
   const [severityLevel, setSeverityLevel] = useState('Normal'); // Normal, Mild, Moderate, Severe
 
-  const [patientName, setPatientName] = useState('Sunil Perera');
-  const [patientAge, setPatientAge] = useState('62');
-  const [patientID, setPatientID] = useState('P-1092');
+  const [patientName, setPatientName] = useState('');
+  const [patientAge, setPatientAge] = useState('');
+  const [patientID, setPatientID] = useState('');
 
   const [timer, setTimer] = useState(0);
   const [currentFreq, setCurrentFreq] = useState(0);
@@ -361,6 +361,7 @@ function App() {
                   type="text" 
                   value={patientName} 
                   onChange={(e) => setPatientName(e.target.value)}
+                  placeholder="Enter patient name"
                   className="input-field"
                 />
               </div>
@@ -372,6 +373,7 @@ function App() {
                     type="number" 
                     value={patientAge} 
                     onChange={(e) => setPatientAge(e.target.value)}
+                    placeholder="Age"
                     className="input-field"
                   />
                 </div>
@@ -381,6 +383,7 @@ function App() {
                     type="text" 
                     value={patientID} 
                     onChange={(e) => setPatientID(e.target.value)}
+                    placeholder="Enter patient ID"
                     className="input-field"
                   />
                 </div>
@@ -735,7 +738,7 @@ function App() {
 
       </main>
       <footer className="footer-layout">
-        <p>VisionPark Screening Tool - Educational Research Prototype (IEEE Young Protégé 2026 update)</p>
+        <p>Tremor Plot Screening Tool - Educational Research Prototype (IEEE Young Protégé 2026 update)</p>
         <p className="mt-1 md:mt-0 text-amber-500 bg-amber-950/20 px-2 py-0.5 rounded border border-amber-900/30">
           ⚠️ Disclaimer: Not a clinical diagnosis system. Abnormal signals require medical consulting.
         </p>

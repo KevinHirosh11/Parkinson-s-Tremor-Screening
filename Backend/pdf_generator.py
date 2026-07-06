@@ -22,7 +22,7 @@ class DiagnosticReportPDF(FPDF):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.cell(50, 5, f"Generated: {current_time}", align="R", ln=1)
         self.set_xy(145, 17)
-        self.cell(50, 5, "Report ID: VP-" + datetime.now().strftime("%Y%m%d%H%M"), align="R")
+        self.cell(50, 5, "Report ID: TP-" + datetime.now().strftime("%Y%m%d%H%M"), align="R")
         
         self.ln(20)
 
@@ -77,14 +77,14 @@ def generate_screening_pdf(data: dict) -> str:
     pdf.cell(30, 6, "Patient Name:")
     pdf.set_font("helvetica", "", 10)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(60, 6, str(data.get("patientName", "Sunil Perera")))
+    pdf.cell(60, 6, str(data.get("patientName") or "Unknown Patient"))
     
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(100, 116, 139)
     pdf.cell(30, 6, "Patient ID:")
     pdf.set_font("helvetica", "", 10)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(50, 6, str(data.get("patientID", "P-1092")), ln=1)
+    pdf.cell(50, 6, str(data.get("patientID") or "Unknown ID"), ln=1)
     
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(100, 116, 139)
@@ -92,7 +92,7 @@ def generate_screening_pdf(data: dict) -> str:
     pdf.cell(30, 6, "Age:")
     pdf.set_font("helvetica", "", 10)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(60, 6, f"{data.get('patientAge', '62')} Years")
+    pdf.cell(60, 6, f"{data.get('patientAge') or 'N/A'} Years")
     
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(100, 116, 139)
@@ -251,8 +251,8 @@ def generate_screening_pdf(data: dict) -> str:
     pdf.cell(60, 5, "Technician / Operator", align="C")
     
     os.makedirs("Reports", exist_ok=True)
-    safe_name = "".join(c for c in data.get("patientName", "Patient") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
-    safe_id = "".join(c for c in data.get("patientID", "ID") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
+    safe_name = "".join(c for c in (data.get("patientName") or "Patient") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
+    safe_id = "".join(c for c in (data.get("patientID") or "ID") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_filename = f"Reports/Diagnostic_Report_{safe_name}_{safe_id}_{timestamp}.pdf"
     pdf.output(report_filename)
