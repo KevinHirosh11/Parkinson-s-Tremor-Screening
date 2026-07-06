@@ -5,24 +5,29 @@ import json
 import base64
 import asyncio
 import threading
+import os
 from scipy.signal import butter, filtfilt
 import mediapipe as mp
 import serial
 import serial.tools.list_ports
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import uvicorn
+from pdf_generator import generate_screening_pdf
 
-app = FastAPI(title="VisionPark Backend")
+app = FastAPI(title="Tremor Plot Backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
-RECORD_TIME = 10.0 
+RECORD_TIME = 30.0 
 TARGET_FPS = 30.0
 dt = 1.0 / TARGET_FPS
 
@@ -319,9 +324,34 @@ async def websocket_endpoint(websocket: WebSocket):
             cap.release()
         serial_reader.stop()
 
+class DiagnosticReportRequest(BaseModel):
+    patientName: str
+    patientAge: str
+    patientID: str
+    selectedTask: str
+    selectedHand: str
+    currentFreq: float
+    amplitude: float
+    severityLevel: str
+    heartRate: int
+    isEspConnected: bool
+
+@app.post("/api/generate-pdf")
+def create_pdf_report(report_data: DiagnosticReportRequest):
+    try:
+        report_file = generate_screening_pdf(report_data.dict())
+        return FileResponse(
+            path=report_file,
+            media_type="application/pdf",
+            filename=os.path.basename(report_file)
+        )
+    except Exception as e:
+        print(f"Error generating PDF: {e}")
+        return {"error": str(e)}
+
 @app.get("/")
 def read_root():
-    return {"status": "VisionPark Backend Active", "port": 8000}
+    return {"status": "Tremor Plot Backend Active", "port": 8000}
 
 if __name__ == "__main__":
     uvicorn.run("run:app", host="127.0.0.1", port=8000, reload=True)

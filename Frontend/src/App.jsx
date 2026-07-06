@@ -227,6 +227,59 @@ function App() {
     setAmplitude(0);
     setFinalStatus("Ready");
   };
+
+  const handleExportPDF = async () => {
+    try {
+      const response = await fetch("http://localhost:8000/api/generate-pdf", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          patientName,
+          patientAge,
+          patientID,
+          selectedTask,
+          selectedHand,
+          currentFreq,
+          amplitude,
+          severityLevel,
+          heartRate,
+          isEspConnected,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to generate PDF from server");
+      }
+
+      const blob = await response.blob();
+      
+      // Get filename from Content-Disposition header
+      let filename = `Diagnostic_Report_${patientName.trim().replace(/\s+/g, '_')}_${patientID.trim().replace(/\s+/g, '_')}.pdf`;
+      const disposition = response.headers.get('Content-Disposition');
+      if (disposition && disposition.indexOf('attachment') !== -1) {
+        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+        const matches = filenameRegex.exec(disposition);
+        if (matches != null && matches[1]) { 
+          filename = matches[1].replace(/['"]/g, '');
+        }
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", filename);
+      document.body.appendChild(link);
+      link.click();
+      
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("PDF Export Error:", error);
+      alert("Error generating PDF: " + error.message);
+    }
+  };
   const getSeverityColor = (sev) => {
     switch (sev) {
       case 'Normal': return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
@@ -256,7 +309,7 @@ function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-cyan-400 via-teal-400 to-emerald-400 bg-clip-text text-transparent">
-              VisionPark Diagnostics
+              Tremor Plot
             </h1>
             <p className="text-xs text-slate-400">Webcam & Sensor-Fusion Parkinson's Screening Support</p>
           </div>
@@ -334,8 +387,8 @@ function App() {
               </div>
             </div>
           </div>
-          <div className="card-container flex-1 flex flex-col justify-between">
-            <div className="space-y-5">
+          <div className="card-container flex-1 flex flex-col min-h-0 justify-between">
+            <div className="flex-1 flex flex-col min-h-0 space-y-4 overflow-y-auto pr-1">
               <div className="card-header pb-0 border-none mb-0">
                 <div className="flex items-center space-x-2">
                   <Sliders className="h-4.5 w-4.5 text-teal-400" />
@@ -402,7 +455,7 @@ function App() {
                  </div>
               </div>
             </div>
-            <div className="space-y-3 pt-5 border-t border-slate-800 mt-6">
+            <div className="space-y-3 pt-3 border-t border-slate-800 mt-3">
               {!isPlaying ? (
                 <button onClick={handleStartSession} className="start-btn animate-pulse">
                   <Play className="h-5 w-5 fill-current" />
@@ -456,16 +509,16 @@ function App() {
                 <span className="kpi-val-amber text-amber-500">
                   {formatTime(timer)}
                 </span>
-                <span className="text-[10px] text-slate-500 block">Target: 10s Capture</span>
+                <span className="text-[10px] text-slate-500 block">Target: 30s Capture</span>
               </div>
               <div className="bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
                 <Clock className="h-5 w-5 text-amber-500" />
               </div>
             </div>
           </div>
-          <div className="chart-card">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col space-y-2">
+          <div className="chart-card flex-1 flex flex-col min-h-0">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-[5] min-h-0">
+              <div className="flex flex-col space-y-2 h-full min-h-0">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-350 flex items-center space-x-1.5">
                     <Camera className="h-4 w-4 text-cyan-400" />
@@ -478,7 +531,7 @@ function App() {
                   )}
                 </div>
 
-                <div className="h-[210px] w-full bg-[#070b19]/90 border border-slate-800 rounded-lg overflow-hidden flex items-center justify-center relative">
+                <div className="flex-1 min-h-0 w-full bg-[#070b19]/90 border border-slate-800 rounded-lg overflow-hidden flex items-center justify-center relative">
                   {isPlaying && webcamFrame ? (
                     <img src={webcamFrame} alt="Webcam Processing" className="h-full w-full object-cover" />
                   ) : (
@@ -490,13 +543,13 @@ function App() {
                   )}
                 </div>
               </div>
-              <div className="flex flex-col space-y-2">
+              <div className="flex flex-col space-y-2 h-full min-h-0">
                 <span className="text-xs font-semibold text-slate-350 flex items-center space-x-1">
                   <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse mr-1"></span>
                   <span>Vibration Oscilloscope</span>
                 </span>
                 
-                <div className="h-[210px] w-full bg-[#070b19]/60 border border-slate-800 rounded-lg p-2">
+                <div className="flex-1 min-h-0 w-full bg-[#070b19]/60 border border-slate-800 rounded-lg p-2">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={oscilloscopeData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1c2541" />
@@ -514,8 +567,8 @@ function App() {
                 </div>
               </div>
             </div>
-            <div>
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+            <div className="flex flex-col flex-[3] min-h-0 mt-2">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-1.5">
                 <div className="flex items-center space-x-2">
                   <Layers className="h-4 w-4 text-purple-400" />
                   <h4 className="text-xs font-semibold text-slate-300">Fast Fourier Transform (FFT) Power Spectrum</h4>
@@ -613,8 +666,8 @@ function App() {
               </div>
             </div>
           </div>
-          <div className="card-container flex-1 flex flex-col justify-between">
-            <div className="space-y-4">
+          <div className="card-container flex-1 flex flex-col min-h-0 justify-between">
+            <div className="flex-1 flex flex-col min-h-0 space-y-2">
               <div className="card-header pb-0 border-none mb-0">
                 <div className="flex items-center space-x-2">
                   <History className="h-4.5 w-4.5 text-purple-400" />
@@ -670,7 +723,7 @@ function App() {
               </div>
             </div>
             <button 
-              onClick={() => alert(`Report successfully generated for ${patientName} (${patientID})!\n- Current Task: ${selectedTask}\n- Frequency: ${currentFreq} Hz\n- Tremor Severity: ${severityLevel}\n- Hardware status: ${isEspConnected ? 'Sensor Connected' : 'Simulating'}`)}
+              onClick={handleExportPDF}
               className="export-btn"
             >
               <FileDown className="h-4 w-4 text-cyan-400" />
