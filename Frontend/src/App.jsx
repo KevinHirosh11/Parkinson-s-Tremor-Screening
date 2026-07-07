@@ -13,10 +13,12 @@ import './App.css';
 function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isEspConnected, setIsEspConnected] = useState(false);
-  const [selectedTask, setSelectedTask] = useState('Finger Tapping'); // Tapping, Opening/Closing, Resting
-  const [selectedHand, setSelectedHand] = useState('Right'); // Right or Left
-  const [selectedTremorType, setSelectedTremorType] = useState('None'); // Resting, Postural, Action, None
-  const [severityLevel, setSeverityLevel] = useState('Normal'); // Normal, Mild, Moderate, Severe
+  const [selectedTask, setSelectedTask] = useState('Finger Tapping');
+  const [selectedHand, setSelectedHand] = useState('Right');
+  const [selectedTremorType, setSelectedTremorType] = useState('None');
+  const [severityLevel, setSeverityLevel] = useState('Normal');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
 
   const [patientName, setPatientName] = useState('');
   const [patientAge, setPatientAge] = useState('');
@@ -75,7 +77,6 @@ function App() {
 
     ws.onopen = () => {
       console.log("[WebSocket] Connected to backend");
-      // Request backend to start camera frame capture
       ws.send(JSON.stringify({
         action: "start",
         task: selectedTask,
@@ -255,7 +256,6 @@ function App() {
 
       const blob = await response.blob();
       
-      // Get filename from Content-Disposition header
       let filename = `Diagnostic_Report_${patientName.trim().replace(/\s+/g, '_')}_${patientID.trim().replace(/\s+/g, '_')}.pdf`;
       const disposition = response.headers.get('Content-Disposition');
       if (disposition && disposition.indexOf('attachment') !== -1) {
@@ -331,6 +331,85 @@ function App() {
             >
               <Bluetooth className={`h-3.5 w-3.5 mr-1.5 ${isEspConnected ? 'animate-bounce' : ''}`} />
               Hardware (ESP32): {isEspConnected ? 'Connected' : 'Simulated'}
+            </button>
+            <button 
+              onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'video/*';
+                input.onchange = async (e) => {
+                  const file = e.target.files[0];
+                  if (!file) return;
+                  
+                  setFinalStatus("Uploading and processing video...");
+                  setIsAnalyzing(true);
+                  setAnalysisResult(null);
+                  
+                  const formData = new FormData();
+                  formData.append("file", file);
+                  
+                  try {
+                    const response = await fetch("http://localhost:8000/api/upload-video", {
+                      method: "POST",
+                      body: formData,
+                    });
+                    
+                    if (!response.ok) {
+                      throw new Error("Failed to process video");
+                    }
+                    
+                    const data = await response.json();
+                    
+                    setCurrentFreq(data.frequency);
+                    setAmplitude(data.amplitude);
+                    setSeverityLevel(data.severity);
+                    
+                    let computedTremorType = 'None';
+                    if (data.frequency >= 4.0 && data.frequency <= 6.0) {
+                      computedTremorType = 'Resting';
+                    } else if (data.frequency >= 8.0 && data.frequency <= 12.0) {
+                      computedTremorType = 'Postural';
+                    } else if (data.frequency >= 6.0 && data.frequency < 8.0) {
+                      computedTremorType = 'Action';
+                    } else if (data.frequency > 0) {
+                      computedTremorType = 'Physiological';
+                    }
+                    setSelectedTremorType(computedTremorType);
+                    
+                    const newSession = {
+                      id: Date.now(),
+                      date: new Date().toISOString().slice(0, 10),
+                      task: `${selectedTask} (Video Upload)`,
+                      hand: selectedHand,
+                      freq: `${data.frequency.toFixed(2)} Hz`,
+                      amplitude: `${data.amplitude.toFixed(2)} m/s²`,
+                      type: computedTremorType,
+                      severity: data.severity
+                    };
+                    setHistorySessions(prev => [newSession, ...prev]);
+                    setFinalStatus("Video processed successfully!");
+
+                    setAnalysisResult({
+                      frequency: data.frequency,
+                      amplitude: data.amplitude,
+                      category: data.category,
+                      severity: data.severity,
+                      stage: data.stage
+                    });
+                  } catch (err) {
+                    console.error("Error processing video:", err);
+                    alert("Error processing video: " + err.message);
+                    setFinalStatus("Ready");
+                  } finally {
+                    setIsAnalyzing(false);
+                  }
+                };
+                input.click();
+              }}
+              className="status-btn-esp border-purple-500/20 bg-purple-950/20 text-purple-400 hover:border-purple-500/40"
+            >
+              <Camera className="h-3.5 w-3.5 mr-1.5" />
+              Upload Diagnostic Video
             </button>
           </div>
 
@@ -743,6 +822,95 @@ function App() {
           ⚠️ Disclaimer: Not a clinical diagnosis system. Abnormal signals require medical consulting.
         </p>
       </footer>
+
+      {isAnalyzing && (
+        <div className="fixed inset-0 bg-[#070b19]/90 backdrop-blur-md z-50 flex flex-col items-center justify-center text-center p-6 animate-fade-in">
+          <div className="relative flex items-center justify-center mb-6">
+            <div className="animate-spin rounded-full h-24 w-24 border-t-2 border-b-2 border-purple-500"></div>
+            <Activity className="absolute h-10 w-10 text-cyan-400 animate-pulse" />
+          </div>
+          <h2 className="text-xl font-semibold text-slate-100 mb-2">Analyzing Diagnostic Video</h2>
+          <p className="text-sm text-purple-400 animate-pulse max-w-md mb-1 font-mono">
+            {finalStatus}
+          </p>
+          <div className="text-xs text-slate-500 mt-4 flex items-center space-x-2">
+            <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-ping"></span>
+            <span>Running MediaPipe Frame Tracking & DSP Staging Models</span>
+          </div>
+        </div>
+      )}
+
+      {analysisResult && (
+        <div className="fixed inset-0 bg-[#02050f]/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[#0b132b] border border-purple-500/30 rounded-2xl p-6 max-w-lg w-full shadow-2xl shadow-purple-950/20 relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-cyan-500 via-purple-500 to-emerald-500"></div>
+            
+            <div className="flex justify-between items-start mb-5">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-purple-400 font-mono px-2 py-0.5 bg-purple-950/40 border border-purple-500/20 rounded">
+                  Diagnostic Report
+                </span>
+                <h3 className="text-lg font-bold text-slate-100 mt-2">Analysis Results</h3>
+              </div>
+              <button 
+                onClick={() => setAnalysisResult(null)} 
+                className="text-slate-400 hover:text-slate-200 text-sm font-semibold p-1 hover:bg-slate-800 rounded transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-4 bg-[#070b19] border border-slate-800 rounded-xl space-y-3">
+                <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
+                  <span className="text-xs text-slate-400">Tremor Frequency:</span>
+                  <span className="text-sm font-bold text-cyan-400">{analysisResult.frequency.toFixed(2)} Hz</span>
+                </div>
+                <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
+                  <span className="text-xs text-slate-400">Vibration Intensity:</span>
+                  <span className="text-sm font-bold text-emerald-400">{analysisResult.amplitude.toFixed(2)} m/s²</span>
+                </div>
+                <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
+                  <span className="text-xs text-slate-400">Clinical Severity:</span>
+                  <span className={`text-sm font-bold ${
+                    analysisResult.severity === 'Severe' ? 'text-red-400' :
+                    analysisResult.severity === 'Moderate' ? 'text-amber-400' :
+                    analysisResult.severity === 'Mild' ? 'text-cyan-400' : 'text-emerald-400'
+                  }`}>{analysisResult.severity}</span>
+                </div>
+                <div className="flex justify-between items-center py-1.5">
+                  <span className="text-xs text-slate-400 font-medium">Estimated Parkinson's Stage:</span>
+                  <span className="text-sm font-extrabold text-purple-400">{analysisResult.stage}</span>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-400 leading-relaxed bg-purple-950/15 border border-purple-500/10 p-3 rounded-lg flex items-start space-x-2">
+                <AlertTriangle className="h-4.5 w-4.5 text-purple-400 flex-shrink-0 mt-0.5" />
+                <p>
+                  Calculated stage mapping represents estimated severity using kinematic parameters based on the Hoehn and Yahr Scale. This is intended solely for screening support.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex space-x-3 mt-6">
+              <button 
+                onClick={handleExportPDF}
+                className="flex-1 bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-[#070b19] font-bold py-2.5 px-4 rounded-xl flex items-center justify-center space-x-2 transition text-xs"
+              >
+                <FileDown className="h-4 w-4" />
+                <span>Download Report PDF</span>
+              </button>
+              <button 
+                onClick={() => setAnalysisResult(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-350 hover:text-slate-100 font-semibold py-2.5 px-5 rounded-xl text-xs transition border border-slate-700"
+              >
+                Close
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
     </div>
   );
 }

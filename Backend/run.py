@@ -10,7 +10,9 @@ from scipy.signal import butter, filtfilt
 import mediapipe as mp
 import serial
 import serial.tools.list_ports
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+import shutil
+import tempfile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -35,8 +37,9 @@ mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+    model_complexity=1
 )
 mp_draw = mp.solutions.drawing_utils
 class SerialSensorReader:
@@ -109,9 +112,14 @@ def detect_hand_mediapipe(frame):
         
     hand_landmarks = results.multi_hand_landmarks[0]
     index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+    mcp = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
+    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
+
+    tx = index_tip.x * 0.7 + mcp.x * 0.2 + wrist.x * 0.1
+    ty = index_tip.y * 0.7 + mcp.y * 0.2 + wrist.y * 0.1
     
     h, w, _ = frame.shape
-    cx, cy = int(index_tip.x * w), int(index_tip.y * h)
+    cx, cy = int(tx * w), int(ty * h)
     
     return hand_landmarks, (cx, cy)
 
@@ -170,7 +178,6 @@ def analyze_tremor(time_series, timestamps):
         return 0.0, 0.0, "Normal / Calculation Error", "Normal"
     scaled_amp = peak_amplitude * 100
     
-    # Calculate severity based on standard rule
     if dominant_frequency < 3.0 or scaled_amp < 1.5:
         severity = "Normal"
     elif 1.5 <= scaled_amp < 5.0:
@@ -348,6 +355,70 @@ def create_pdf_report(report_data: DiagnosticReportRequest):
     except Exception as e:
         print(f"Error generating PDF: {e}")
         return {"error": str(e)}
+
+@app.post("/api/upload-video")
+async def upload_video(file: UploadFile = File(...)):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            shutil.copyfileobj(file.file, temp_video)
+            temp_path = temp_video.name
+            
+        print(f"[Video Analysis] Saved uploaded video to {temp_path}")
+        
+        cap = cv2.VideoCapture(temp_path)
+        coordinate_history = []
+        timestamp_history = []
+        
+        fps = cap.get(cv2.CAP_PROP_FPS) or TARGET_FPS
+        frame_delay = 1.0 / fps
+        elapsed = 0.0
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            hand_landmarks, index_tip_coords = detect_hand_mediapipe(frame)
+            if hand_landmarks and index_tip_coords:
+                h, w, _ = frame.shape
+                cx, cy = index_tip_coords
+                coordinate_history.append((cx / w, cy / h))
+                timestamp_history.append(elapsed)
+                
+            elapsed += frame_delay
+            
+        cap.release()
+        
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+            
+        print(f"[Video Analysis] Extracted {len(coordinate_history)} coordinates from video")
+        
+        if len(coordinate_history) > 20:
+            frequency, amplitude, category, severity = analyze_tremor(coordinate_history, timestamp_history)
+        else:
+            frequency, amplitude, category, severity = 0.0, 0.0, "Insufficient Data", "Normal"
+            
+        stage = "Stage 0 (No Tremor)"
+        if severity == "Mild":
+            stage = "Stage 1 (Unilateral involvement only)"
+        elif severity == "Moderate":
+            stage = "Stage 2 (Bilateral involvement, without impairment of balance)"
+        elif severity == "Severe":
+            stage = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
+            
+        return {
+            "frequency": round(frequency, 2),
+            "amplitude": round(amplitude, 2),
+            "category": category,
+            "severity": severity,
+            "stage": stage
+        }
+    except Exception as e:
+        print(f"Error processing video upload: {e}")
+        return {"error": str(e), "frequency": 0.0, "amplitude": 0.0, "severity": "Normal", "stage": "Stage 0"}
 
 @app.get("/")
 def read_root():
