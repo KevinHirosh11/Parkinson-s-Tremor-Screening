@@ -3,11 +3,10 @@
 #include <Wire.h>
 
 Adafruit_MPU6050 mpu;
-const int PPG_PIN = 34; 
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) delay(10); 
+  Serial.println("Serial Communication Started");
 
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050 chip");
@@ -18,23 +17,17 @@ void setup() {
 
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BANDWIDTH_21_HZ);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 }
 
 void loop() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  int ppgValue = analogRead(PPG_PIN);
-  
-  Serial.print("IMU:");
-  Serial.print(a.acceleration.x);
-  Serial.print(",");
-  Serial.print(a.acceleration.y);
-  Serial.print(",");
-  Serial.print(a.acceleration.z);
-  Serial.print("|PPG:");
-  Serial.println(ppgValue);
+  Serial.print("IMU_X:"); Serial.println(a.acceleration.x);
+  Serial.print("IMU_Y:"); Serial.println(a.acceleration.y);
+  Serial.print("IMU_Z:"); Serial.println(a.acceleration.z);
+  Serial.println();
 
   delay(33); 
 }
