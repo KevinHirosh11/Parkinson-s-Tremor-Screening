@@ -8,7 +8,22 @@ import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, 
   CartesianGrid, Tooltip, AreaChart, Area 
 } from 'recharts';
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, onValue, off } from "firebase/database";
 import './App.css';
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
+};
+
+const app = initializeApp(firebaseConfig);
+const database = getDatabase(app);
 
 function App() {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -75,6 +90,33 @@ function App() {
     wsRef.current = ws;
     setIsPlaying(true);
 
+    const sensorRef = ref(database, 'sensorData');
+    const unsubscribeFirebase = onValue(sensorRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const rawPpg = data.ppg || 50;
+        setHeartRate(Math.floor(70 + (rawPpg % 15)));
+        
+        setOscilloscopeData(prev => {
+          const slice = prev.slice(-39);
+          return [...slice, {
+            time: Date.now(),
+            x: data.imu ? data.imu.x : 0,
+            y: data.imu ? data.imu.y : 0,
+            z: data.imu ? data.imu.z : 0
+          }];
+        });
+
+        setPpgData(prev => {
+          const slice = prev.slice(-39);
+          return [...slice, {
+            time: Date.now(),
+            val: rawPpg
+          }];
+        });
+      }
+    });
+
     ws.onopen = () => {
       console.log("[WebSocket] Connected to backend");
       ws.send(JSON.stringify({
@@ -114,24 +156,7 @@ function App() {
         } else {
           setSelectedTremorType('None');
         }
-        const rawPpg = data.ppg;
-        setHeartRate(Math.floor(70 + (rawPpg % 15)));
-        setOscilloscopeData(prev => {
-          const slice = prev.slice(-39);
-          return [...slice, {
-            time: data.elapsed,
-            x: data.imu.x,
-            y: data.imu.y,
-            z: data.imu.z
-          }];
-        });
-        setPpgData(prev => {
-          const slice = prev.slice(-39);
-          return [...slice, {
-            time: data.elapsed,
-            val: rawPpg
-          }];
-        });
+        
         setFftData(() => {
           const newFft = [];
           const peakHz = data.live_frequency;
@@ -149,7 +174,7 @@ function App() {
           }
           return newFft;
         });
-      } 
+      }  
       
       else if (data.event === "completed") {
         console.log("[WebSocket] Capture complete");
@@ -157,6 +182,8 @@ function App() {
         setWebcamFrame(null);
         setHandDetected(false);
         setFinalStatus("Test Complete!");
+        
+        unsubscribeFirebase();
 
         setCurrentFreq(data.final_frequency);
         setAmplitude(data.final_amplitude);
@@ -197,6 +224,7 @@ function App() {
       else if (data.event === "error") {
         alert("Backend Error: " + data.message);
         setIsPlaying(false);
+        unsubscribeFirebase();
       }
     };
 
@@ -204,12 +232,14 @@ function App() {
       console.error("[WebSocket] error: ", err);
       alert("Failed to connect to backend server. Make sure run.py is running on port 8000!");
       setIsPlaying(false);
+      unsubscribeFirebase();
     };
 
     ws.onclose = () => {
       console.log("[WebSocket] Connection closed");
       setIsPlaying(false);
       setWebcamFrame(null);
+      unsubscribeFirebase();
     };
   };
 
