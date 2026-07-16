@@ -48,15 +48,14 @@ class SerialSensorReader:
         self.running = False
         self.latest_imu = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.latest_ppg = 50
+        self.latest_bpm = 0
         self.thread = None
 
     def find_esp32_port(self):
         ports = serial.tools.list_ports.comports()
         for port in ports:
-            # Match CP210x (COM8), CH340, or any USB Serial Device
             if "CP210" in port.description or "CH340" in port.description or "USB" in port.description:
                 return port.device
-        # Fallback to the first available port if exact match fails
         if ports:
             return ports[0].device
         return None
@@ -101,6 +100,11 @@ class SerialSensorReader:
                             elif part.startswith("PPG:"):
                                 try:
                                     self.latest_ppg = int(part.replace("PPG:", ""))
+                                except ValueError:
+                                    pass
+                            elif part.startswith("BPM:"):
+                                try:
+                                    self.latest_bpm = int(part.replace("BPM:", ""))
                                 except ValueError:
                                     pass
                     else:
@@ -285,6 +289,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     imu_data = serial_reader.latest_imu
                     ppg_data = serial_reader.latest_ppg
+                    bpm_data = serial_reader.latest_bpm
 
                     live_freq = 0.0
                     live_amp = 0.0
@@ -306,7 +311,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         "live_amplitude": round(live_amp, 1),
                         "live_severity": live_severity,
                         "imu": imu_data,
-                        "ppg": ppg_data
+                        "ppg": ppg_data,
+                        "bpm": bpm_data
                     })
                     if elapsed >= RECORD_TIME:
                         recording = False

@@ -135,7 +135,11 @@ function App() {
               val: data.ppg
             }];
           });
-          setHeartRate(Math.floor(70 + (data.ppg % 15)));
+        }
+        if (data.bpm !== undefined) {
+          setHeartRate(data.bpm);
+        } else {
+          setHeartRate(0);
         }
 
         if (data.live_severity) {
@@ -810,7 +814,9 @@ function App() {
                   <Heart className="h-4 w-4 text-red-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-300">PPG Heart Rate</span>
                 </div>
-                <span className="text-[10px] font-mono text-slate-400">{heartRate} BPM</span>
+                <span className="text-[10px] font-mono text-slate-400">
+                  {heartRate > 0 ? `${heartRate} BPM` : 'No Contact / Calibrating'}
+                </span>
               </div>
               <div className="h-[40px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
