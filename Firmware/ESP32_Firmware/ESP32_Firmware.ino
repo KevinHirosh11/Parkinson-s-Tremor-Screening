@@ -5,31 +5,19 @@
 #include <Wire.h>
 #include "secrets.h"
 
-// FirebaseData configuration will use constants from secrets.h
 FirebaseData firebaseData;
 FirebaseAuth auth;
 FirebaseConfig config;
 Adafruit_MPU6050 mpu;
+
+bool wifiConnected = false;
+bool firebaseReady = false;
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Serial Communication Started");
 
   Wire.begin(21, 22);
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(300);
-  }
-  Serial.println("\nConnected to Wi-Fi");
-
-  config.host = FIREBASE_HOST;
-  config.signer.tokens.legacy_token = FIREBASE_AUTH;
-
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
 
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050 chip");
@@ -43,6 +31,9 @@ void setup() {
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("Connecting to Wi-Fi...");
 }
 
 void loop() {
@@ -51,13 +42,32 @@ void loop() {
 
   int ppg_val = analogRead(34);
 
-  Firebase.setFloat(firebaseData, "/sensorData/imu/x", a.acceleration.x);
-  Firebase.setFloat(firebaseData, "/sensorData/imu/y", a.acceleration.y);
-  Firebase.setFloat(firebaseData, "/sensorData/imu/z", a.acceleration.z);
-  Firebase.setInt(firebaseData, "/sensorData/ppg", ppg_val);
-
-  Serial.print("Data pushed to Firebase. PPG: ");
+  Serial.print("IMU:");
+  Serial.print(a.acceleration.x);
+  Serial.print(",");
+  Serial.print(a.acceleration.y);
+  Serial.print(",");
+  Serial.print(a.acceleration.z);
+  Serial.print("|PPG:");
   Serial.println(ppg_val);
+
+  if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
+    wifiConnected = true;
+    Serial.println("\nConnected to Wi-Fi");
+
+    config.host = FIREBASE_HOST;
+    config.signer.tokens.legacy_token = FIREBASE_AUTH;
+    Firebase.begin(&config, &auth);
+    Firebase.reconnectWiFi(true);
+    firebaseReady = true;
+  }
+
+  if (firebaseReady) {
+    Firebase.setFloat(firebaseData, "/sensorData/imu/x", a.acceleration.x);
+    Firebase.setFloat(firebaseData, "/sensorData/imu/y", a.acceleration.y);
+    Firebase.setFloat(firebaseData, "/sensorData/imu/z", a.acceleration.z);
+    Firebase.setInt(firebaseData, "/sensorData/ppg", ppg_val);
+  }
 
   delay(33); 
 }

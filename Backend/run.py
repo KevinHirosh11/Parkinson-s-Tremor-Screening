@@ -53,8 +53,12 @@ class SerialSensorReader:
     def find_esp32_port(self):
         ports = serial.tools.list_ports.comports()
         for port in ports:
+            # Match CP210x (COM8), CH340, or any USB Serial Device
             if "CP210" in port.description or "CH340" in port.description or "USB" in port.description:
                 return port.device
+        # Fallback to the first available port if exact match fails
+        if ports:
+            return ports[0].device
         return None
 
     def start(self):
@@ -65,6 +69,10 @@ class SerialSensorReader:
         
         try:
             self.ser = serial.Serial(port, 115200, timeout=0.1)
+            self.ser.reset_input_buffer()
+            import time
+            time.sleep(2)
+            self.ser.reset_input_buffer()
             self.running = True
             self.thread = threading.Thread(target=self._read_loop, daemon=True)
             self.thread.start()
@@ -79,7 +87,7 @@ class SerialSensorReader:
             try:
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                 if line:
-                    if line.startswith("IMU:") or "|" in line:
+                    if "IMU:" in line or "PPG:" in line:
                         parts = line.split("|")
                         for part in parts:
                             if part.startswith("IMU:"):
@@ -91,7 +99,12 @@ class SerialSensorReader:
                                         "z": float(vals[2])
                                     }
                             elif part.startswith("PPG:"):
-                                self.latest_ppg = int(part.replace("PPG:", ""))
+                                try:
+                                    self.latest_ppg = int(part.replace("PPG:", ""))
+                                except ValueError:
+                                    pass
+                    else:
+                        print(f"[Hardware] Raw line: {line}")
             except Exception as e:
                 pass
 
@@ -218,49 +231,57 @@ async def websocket_endpoint(websocket: WebSocket):
                     "connected": hw_connected
                 })
                 
-                cap = cv2.VideoCapture(0)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                
-                if not cap.isOpened():
-                    await websocket.send_json({
-                        "event": "error",
-                        "message": "Could not open webcam."
-                    })
-                    continue
+                cap = None
+                try:
+                    cap = cv2.VideoCapture(0)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    if not cap.isOpened():
+                        print("[WS] Webcam not available, running in sensor-only mode")
+                        cap.release()
+                        cap = None
+                    else:
+                        print("[WS] Webcam opened successfully")
+                except Exception as e:
+                    print(f"[WS] Webcam error: {e}")
+                    cap = None
                 
                 recording = True
                 start_time = time.time()
                 coordinate_history = []
                 timestamp_history = []
                 
-                print("[WS] Started live webcam session")
-                while recording and cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        print("[WS] Failed to capture frame")
-                        break
-                        
-                    frame = cv2.flip(frame, 1)
-                    h, w, c = frame.shape
-                    
-                    hand_landmarks, finger_tip = detect_hand_mediapipe(frame)
-                    
-                    hand_detected = False
-                    cx, cy = 0, 0
-                    
-                    if finger_tip is not None:
-                        hand_detected = True
-                        cx, cy = finger_tip[0], finger_tip[1]
-                        mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                        cv2.circle(frame, (cx, cy), 8, (0, 0, 255), -1)
-                    
+                print("[WS] Started live session")
+                while recording:
                     current_time = time.time()
                     elapsed = current_time - start_time
 
-                    if hand_detected:
-                        coordinate_history.append((cx / w, cy / h))
-                        timestamp_history.append(elapsed)
+                    hand_detected = False
+                    frame_base64 = ""
+                    cx, cy = 0, 0
+
+                    if cap and cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                            
+                        frame = cv2.flip(frame, 1)
+                        h, w, c = frame.shape
+                        
+                        hand_landmarks, finger_tip = detect_hand_mediapipe(frame)
+                        
+                        if finger_tip is not None:
+                            hand_detected = True
+                            cx, cy = finger_tip[0], finger_tip[1]
+                            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                            cv2.circle(frame, (cx, cy), 8, (0, 0, 255), -1)
+                        
+                        if hand_detected:
+                            coordinate_history.append((cx / w, cy / h))
+                            timestamp_history.append(elapsed)
+                        
+                        _, buffer = cv2.imencode('.jpg', frame)
+                        frame_base64 = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
                     
                     imu_data = serial_reader.latest_imu
                     ppg_data = serial_reader.latest_ppg
@@ -275,12 +296,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             live_freq, live_amp, _, live_severity = analyze_tremor(recent_coords, recent_times)
                         except Exception:
                             pass
-                    _, buffer = cv2.imencode('.jpg', frame)
-                    frame_base64 = base64.b64encode(buffer).decode('utf-8')
                     
                     await websocket.send_json({
                         "event": "data",
-                        "frame": f"data:image/jpeg;base64,{frame_base64}",
+                        "frame": frame_base64,
                         "hand_detected": hand_detected,
                         "elapsed": round(elapsed, 1),
                         "live_frequency": round(live_freq, 1),

@@ -90,33 +90,6 @@ function App() {
     wsRef.current = ws;
     setIsPlaying(true);
 
-    const sensorRef = ref(database, 'sensorData');
-    const unsubscribeFirebase = onValue(sensorRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const rawPpg = data.ppg || 50;
-        setHeartRate(Math.floor(70 + (rawPpg % 15)));
-        
-        setOscilloscopeData(prev => {
-          const slice = prev.slice(-39);
-          return [...slice, {
-            time: Date.now(),
-            x: data.imu ? data.imu.x : 0,
-            y: data.imu ? data.imu.y : 0,
-            z: data.imu ? data.imu.z : 0
-          }];
-        });
-
-        setPpgData(prev => {
-          const slice = prev.slice(-39);
-          return [...slice, {
-            time: Date.now(),
-            val: rawPpg
-          }];
-        });
-      }
-    });
-
     ws.onopen = () => {
       console.log("[WebSocket] Connected to backend");
       ws.send(JSON.stringify({
@@ -142,6 +115,29 @@ function App() {
         setCurrentFreq(data.live_frequency);
         setAmplitude(data.live_amplitude);
         
+        if (data.imu && data.imu.x !== undefined) {
+          setIsEspConnected(data.imu.x !== 0.0 || data.imu.y !== 0.0 || data.imu.z !== 0.0);
+          setOscilloscopeData(prev => {
+            const slice = prev.slice(-39);
+            return [...slice, {
+              time: Date.now(),
+              x: data.imu.x,
+              y: data.imu.y,
+              z: data.imu.z
+            }];
+          });
+        }
+        if (data.ppg !== undefined) {
+           setPpgData(prev => {
+            const slice = prev.slice(-39);
+            return [...slice, {
+              time: Date.now(),
+              val: data.ppg
+            }];
+          });
+          setHeartRate(Math.floor(70 + (data.ppg % 15)));
+        }
+
         if (data.live_severity) {
           setSeverityLevel(data.live_severity);
         }
@@ -182,8 +178,6 @@ function App() {
         setWebcamFrame(null);
         setHandDetected(false);
         setFinalStatus("Test Complete!");
-        
-        unsubscribeFirebase();
 
         setCurrentFreq(data.final_frequency);
         setAmplitude(data.final_amplitude);
