@@ -25,6 +25,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000';
+const unsubscribeFirebase = () => {};
+
 function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isEspConnected, setIsEspConnected] = useState(false);
@@ -46,6 +50,7 @@ function App() {
   const [webcamFrame, setWebcamFrame] = useState(null);
   const [handDetected, setHandDetected] = useState(false);
   const [finalStatus, setFinalStatus] = useState("Ready");
+  const [hardwareMessage, setHardwareMessage] = useState('');
 
   const [oscilloscopeData, setOscilloscopeData] = useState([]);
   const [fftData, setFftData] = useState([]);
@@ -86,7 +91,7 @@ function App() {
 
     setTimer(0);
     setFinalStatus("Acquiring Live Streams...");
-    const ws = new WebSocket('ws://localhost:8000/ws');
+    const ws = new WebSocket(`${WS_BASE_URL.replace('http', 'ws')}/ws`);
     wsRef.current = ws;
     setIsPlaying(true);
 
@@ -106,6 +111,10 @@ function App() {
       
       if (data.event === "hardware_status") {
         setIsEspConnected(data.connected);
+        setHardwareMessage(data.message || '');
+        if (!data.connected && data.message) {
+          setFinalStatus("Warning: " + data.message);
+        }
       } 
       
       else if (data.event === "data") {
@@ -228,7 +237,7 @@ function App() {
 
     ws.onerror = (err) => {
       console.error("[WebSocket] error: ", err);
-      alert("Failed to connect to backend server. Make sure run.py is running on port 8000!");
+      alert(`Failed to connect to backend server. Make sure the backend is running at ${API_BASE_URL}!`);
       setIsPlaying(false);
       unsubscribeFirebase();
     };
@@ -259,7 +268,7 @@ function App() {
 
   const handleExportPDF = async () => {
     try {
-      const response = await fetch("http://localhost:8000/api/generate-pdf", {
+      const response = await fetch(`${API_BASE_URL}/api/generate-pdf`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -377,7 +386,7 @@ function App() {
                   formData.append("file", file);
                   
                   try {
-                    const response = await fetch("http://localhost:8000/api/upload-video", {
+                    const response = await fetch(`${API_BASE_URL}/api/upload-video`, {
                       method: "POST",
                       body: formData,
                     });
@@ -566,6 +575,16 @@ function App() {
               </div>
             </div>
             <div className="space-y-3 pt-3 border-t border-slate-800 mt-3">
+              {hardwareMessage && (
+                <div className={`text-[10px] p-2 rounded flex items-start space-x-1.5 border leading-normal ${
+                  isEspConnected 
+                    ? 'text-cyan-400 bg-cyan-950/20 border-cyan-800/35' 
+                    : 'text-amber-500 bg-amber-950/20 border-amber-800/35'
+                }`}>
+                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <span>{hardwareMessage}</span>
+                </div>
+              )}
               {!isPlaying ? (
                 <button onClick={handleStartSession} className="start-btn animate-pulse">
                   <Play className="h-5 w-5 fill-current" />

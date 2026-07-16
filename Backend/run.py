@@ -63,11 +63,17 @@ class SerialSensorReader:
     def start(self):
         port = self.find_esp32_port()
         if not port:
-            print("[Hardware] No ESP32/USB Serial device detected. Falling back to software simulation.")
-            return False
+            msg = "No ESP32/USB Serial device detected. Falling back to software simulation."
+            print(f"[Hardware] {msg}")
+            self.running = True
+            self.thread = threading.Thread(target=self._simulation_loop, daemon=True)
+            self.thread.start()
+            return False, msg
         
         try:
             self.ser = serial.Serial(port, 115200, timeout=0.1)
+            self.ser.setDTR(False)
+            self.ser.setRTS(False)
             self.ser.reset_input_buffer()
             import time
             time.sleep(2)
@@ -75,11 +81,36 @@ class SerialSensorReader:
             self.running = True
             self.thread = threading.Thread(target=self._read_loop, daemon=True)
             self.thread.start()
-            print(f"[Hardware] Connected to ESP32 on port {port}")
-            return True
+            msg = f"Connected to ESP32 on port {port}"
+            print(f"[Hardware] {msg}")
+            return True, msg
         except Exception as e:
-            print(f"[Hardware] Failed to open serial port {port}: {e}")
-            return False
+            msg = f"Failed to open serial port {port}: {e}. Falling back to software simulation."
+            print(f"[Hardware] {msg}")
+            self.running = True
+            self.thread = threading.Thread(target=self._simulation_loop, daemon=True)
+            self.thread.start()
+            return False, msg
+
+    def _simulation_loop(self):
+        t = 0.0
+        while self.running:
+            # Simulate PPG signal (sine wave + noise)
+            ppg_val = int(2048 + 400 * np.sin(2 * np.pi * 1.25 * t) + np.random.normal(0, 15))
+            self.latest_ppg = ppg_val
+            # Simulate a realistic heart rate (e.g. oscillating between 71 and 75)
+            self.latest_bpm = int(73 + 2 * np.sin(2 * np.pi * 0.03 * t))
+            
+            # Simulate minor IMU jitter
+            self.latest_imu = {
+                "x": float(np.random.normal(0, 0.03)),
+                "y": float(np.random.normal(0, 0.03)),
+                "z": float(9.8 + np.random.normal(0, 0.03))
+            }
+            
+            t += 0.033
+            import time
+            time.sleep(0.033)
 
     def _read_loop(self):
         while self.running and self.ser and self.ser.is_open:
@@ -229,10 +260,11 @@ async def websocket_endpoint(websocket: WebSocket):
             action = message.get("action")
             
             if action == "start":
-                hw_connected = serial_reader.start()
+                hw_connected, hw_msg = serial_reader.start()
                 await websocket.send_json({
                     "event": "hardware_status",
-                    "connected": hw_connected
+                    "connected": hw_connected,
+                    "message": hw_msg
                 })
                 
                 cap = None
@@ -447,7 +479,10 @@ async def upload_video(file: UploadFile = File(...)):
 
 @app.get("/")
 def read_root():
-    return {"status": "Tremor Plot Backend Active", "port": 8000}
+    port = int(os.environ.get("TREMOR_BACKEND_PORT", "8000"))
+    return {"status": "Tremor Plot Backend Active", "port": port}
 
 if __name__ == "__main__":
-    uvicorn.run("run:app", host="127.0.0.1", port=8000, reload=True)
+    host = os.environ.get("TREMOR_BACKEND_HOST", "127.0.0.1")
+    port = int(os.environ.get("TREMOR_BACKEND_PORT", "8000"))
+    uvicorn.run("run:app", host=host, port=port, reload=True)

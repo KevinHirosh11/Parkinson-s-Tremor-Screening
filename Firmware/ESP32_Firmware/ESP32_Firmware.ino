@@ -68,12 +68,12 @@ void loop() {
   }
   int p2p = max_val - min_val;
 
-  int ppg_val = 2048; 
+  int ppg_val = 0; 
   int ppg_bpm = 0;
 
-  if (raw_ppg < 4000 && raw_ppg > 100 && p2p > 40 && p2p < 1000) {
+  // Real contact detection: raw_ppg should be within active ranges and p2p variation must be sufficient (> 60)
+  if (raw_ppg < 4000 && raw_ppg > 300 && p2p > 60 && p2p < 2500) {
     ppg_val = raw_ppg; 
-
     int threshold = min_val + (p2p / 2);
     
     if (raw_ppg > threshold) {
@@ -104,6 +104,7 @@ void loop() {
   } else {
     currentBPM = 0.0;
     lastBeatTime = 0;
+    ppg_val = 0;
     ppg_bpm = 0;
   }
 

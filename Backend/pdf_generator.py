@@ -250,10 +250,19 @@ def generate_screening_pdf(data: dict) -> str:
     pdf.set_xy(135, 257)
     pdf.cell(60, 5, "Technician / Operator", align="C")
     
-    os.makedirs("Reports", exist_ok=True)
+    home = os.path.expanduser("~")
+    downloads_path = os.path.join(home, "Downloads")
+    if not os.path.exists(downloads_path):
+        downloads_path = os.path.join(home, "Documents")
+    if not os.path.exists(downloads_path):
+        downloads_path = home
+        
+    reports_dir = os.path.join(downloads_path, "TremorPlot_Reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    
     safe_name = "".join(c for c in (data.get("patientName") or "Patient") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
     safe_id = "".join(c for c in (data.get("patientID") or "ID") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_filename = f"Reports/Diagnostic_Report_{safe_name}_{safe_id}_{timestamp}.pdf"
+    report_filename = os.path.join(reports_dir, f"Diagnostic_Report_{safe_name}_{safe_id}_{timestamp}.pdf")
     pdf.output(report_filename)
     return report_filename
