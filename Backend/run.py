@@ -18,6 +18,77 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
 from pdf_generator import generate_screening_pdf
+import joblib
+from sklearn.ensemble import RandomForestClassifier
+
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+SEVERITY_MODEL_PATH = os.path.join(MODELS_DIR, "severity_model.pkl")
+CATEGORY_MODEL_PATH = os.path.join(MODELS_DIR, "category_model.pkl")
+STAGE_MODEL_PATH = os.path.join(MODELS_DIR, "stage_model.pkl")
+
+def train_and_save_models():
+    print("[ML Startup] Training ML models on clinical rules...")
+    np.random.seed(42)
+    n_samples = 10000
+
+    freqs = np.random.uniform(0.0, 15.0, n_samples)
+    amps = np.random.uniform(0.0, 30.0, n_samples)
+    
+    X = np.stack([freqs, amps], axis=1)
+    
+    y_severity = []
+    y_category = []
+    y_stage = []
+    
+    for f, a in X:
+        if f < 3.0 or a < 1.5:
+            sev = "Normal"
+        elif 1.5 <= a < 5.0:
+            sev = "Mild"
+        elif 5.0 <= a <= 15.0:
+            sev = "Moderate"
+        else:
+            sev = "Severe"
+        y_severity.append(sev)
+
+        if 4.0 <= f <= 6.0:
+            cat = "Parkinsonian Rest Tremor Range (4-6 Hz)"
+        elif 8.0 <= f <= 12.0:
+            cat = "Essential / Physiological Tremor Range (8-12 Hz)"
+        else:
+            cat = "Normal / Low Activity"
+        y_category.append(cat)
+
+        stg = "Stage 0 (No Tremor)"
+        if sev == "Mild":
+            stg = "Stage 1 (Unilateral involvement only)"
+        elif sev == "Moderate":
+            stg = "Stage 2 (Bilateral involvement, without impairment of balance)"
+        elif sev == "Severe":
+            stg = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
+        y_stage.append(stg)
+        
+    severity_clf = RandomForestClassifier(n_estimators=50, random_state=42)
+    severity_clf.fit(X, y_severity)
+    joblib.dump(severity_clf, SEVERITY_MODEL_PATH)
+    
+    category_clf = RandomForestClassifier(n_estimators=50, random_state=42)
+    category_clf.fit(X, y_category)
+    joblib.dump(category_clf, CATEGORY_MODEL_PATH)
+    
+    stage_clf = RandomForestClassifier(n_estimators=50, random_state=42)
+    stage_clf.fit(X, y_stage)
+    joblib.dump(stage_clf, STAGE_MODEL_PATH)
+    print("[ML Startup] Models trained and saved successfully.")
+
+if not (os.path.exists(SEVERITY_MODEL_PATH) and os.path.exists(CATEGORY_MODEL_PATH) and os.path.exists(STAGE_MODEL_PATH)):
+    train_and_save_models()
+
+severity_clf = joblib.load(SEVERITY_MODEL_PATH)
+category_clf = joblib.load(CATEGORY_MODEL_PATH)
+stage_clf = joblib.load(STAGE_MODEL_PATH)
 
 app = FastAPI(title="Tremor Plot Backend")
 app.add_middleware(
@@ -225,21 +296,14 @@ def analyze_tremor(time_series, timestamps):
         print(f"DSP Error: {e}")
         return 0.0, 0.0, "Normal / Calculation Error", "Normal"
     scaled_amp = peak_amplitude * 100
-    
-    if dominant_frequency < 3.0 or scaled_amp < 1.5:
+
+    features = np.array([[float(dominant_frequency), float(scaled_amp)]])
+    try:
+        severity = severity_clf.predict(features)[0]
+        category = category_clf.predict(features)[0]
+    except Exception as e:
+        print(f"[ML Prediction Error] {e}")
         severity = "Normal"
-    elif 1.5 <= scaled_amp < 5.0:
-        severity = "Mild"
-    elif 5.0 <= scaled_amp <= 15.0:
-        severity = "Moderate"
-    else:
-        severity = "Severe"
-    
-    if 4.0 <= dominant_frequency <= 6.0:
-        category = "Parkinsonian Rest Tremor Range (4-6 Hz)"
-    elif 8.0 <= dominant_frequency <= 12.0:
-        category = "Essential / Physiological Tremor Range (8-12 Hz)"
-    else:
         category = "Normal / Low Activity"
         
     return float(dominant_frequency), float(scaled_amp), category, severity
@@ -458,13 +522,13 @@ async def upload_video(file: UploadFile = File(...)):
         else:
             frequency, amplitude, category, severity = 0.0, 0.0, "Insufficient Data", "Normal"
             
-        stage = "Stage 0 (No Tremor)"
-        if severity == "Mild":
-            stage = "Stage 1 (Unilateral involvement only)"
-        elif severity == "Moderate":
-            stage = "Stage 2 (Bilateral involvement, without impairment of balance)"
-        elif severity == "Severe":
-            stage = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
+        # Predict stage using ML model
+        try:
+            features = np.array([[float(frequency), float(amplitude)]])
+            stage = stage_clf.predict(features)[0]
+        except Exception as e:
+            print(f"[ML Stage Prediction Error] {e}")
+            stage = "Stage 0 (No Tremor)"
             
         return {
             "frequency": round(frequency, 2),
