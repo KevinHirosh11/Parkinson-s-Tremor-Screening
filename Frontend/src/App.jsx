@@ -385,55 +385,55 @@ function App() {
                   const formData = new FormData();
                   formData.append("file", file);
                   
-                  try {
-                    const response = await fetch(`${API_BASE_URL}/api/upload-video`, {
-                      method: "POST",
-                      body: formData,
-                    });
-                    
-                    if (!response.ok) {
-                      throw new Error("Failed to process video");
-                    }
-                    
-                    const data = await response.json();
-                    
-                    setCurrentFreq(data.frequency);
-                    setAmplitude(data.amplitude);
-                    setSeverityLevel(data.severity);
-                    
-                    let computedTremorType = 'None';
-                    if (data.frequency >= 4.0 && data.frequency <= 6.0) {
-                      computedTremorType = 'Resting';
-                    } else if (data.frequency >= 8.0 && data.frequency <= 12.0) {
-                      computedTremorType = 'Postural';
-                    } else if (data.frequency >= 6.0 && data.frequency < 8.0) {
-                      computedTremorType = 'Action';
-                    } else if (data.frequency > 0) {
-                      computedTremorType = 'Physiological';
-                    }
-                    setSelectedTremorType(computedTremorType);
-                    
-                    const newSession = {
-                      id: Date.now(),
-                      date: new Date().toISOString().slice(0, 10),
-                      task: `${selectedTask} (Video Upload)`,
-                      hand: selectedHand,
-                      freq: `${data.frequency.toFixed(2)} Hz`,
-                      amplitude: `${data.amplitude.toFixed(2)} m/s²`,
-                      type: computedTremorType,
-                      severity: data.severity
-                    };
-                    setHistorySessions(prev => [newSession, ...prev]);
-                    setFinalStatus("Video processed successfully!");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/upload-video`, {
+        method: "POST",
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error("Failed to process video");
+      }
+      
+      const data = await response.json();
+      
+      setCurrentFreq(data.frequency);
+      setAmplitude(data.amplitude);
+      setSeverityLevel(data.severity);
+      
+      let computedTremorType = 'None';
+      if (data.frequency >= 4.0 && data.frequency <= 6.0) {
+        computedTremorType = 'Resting';
+      } else if (data.frequency >= 8.0 && data.frequency <= 12.0) {
+        computedTremorType = 'Postural';
+      } else if (data.frequency >= 6.0 && data.frequency < 8.0) {
+        computedTremorType = 'Action';
+      } else if (data.frequency > 0) {
+        computedTremorType = 'Physiological';
+      }
+      setSelectedTremorType(computedTremorType);
+      
+        const newSession = {
+          id: Date.now(),
+          date: new Date().toISOString().slice(0, 10),
+          task: `${selectedTask} (Video Upload)`,
+          hand: selectedHand,
+          freq: `${Number(data.frequency || 0).toFixed(2)} Hz`,
+          amplitude: `${Number(data.amplitude || 0).toFixed(2)} m/s²`,
+          type: computedTremorType,
+          severity: data.severity || "Normal"
+        };
+        setHistorySessions(prev => [newSession, ...prev].slice(0, 10));
+        setFinalStatus("Video processed successfully!");
 
-                    setAnalysisResult({
-                      frequency: data.frequency,
-                      amplitude: data.amplitude,
-                      category: data.category,
-                      severity: data.severity,
-                      stage: data.stage
-                    });
-                  } catch (err) {
+        setAnalysisResult({
+        frequency: Number(data.frequency || 0),
+        amplitude: Number(data.amplitude || 0),
+        category: data.category || "Normal",
+        severity: data.severity || "Normal",
+        stage: data.stage || "Stage 0 (No Tremor)"
+      });
+    } catch (err) {
                     console.error("Error processing video:", err);
                     alert("Error processing video: " + err.message);
                     setFinalStatus("Ready");

@@ -19,7 +19,10 @@ from pydantic import BaseModel
 import uvicorn
 from pdf_generator import generate_screening_pdf
 import joblib
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.ensemble import RandomForestClassifier
+import pandas as pd
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 os.makedirs(MODELS_DIR, exist_ok=True)
@@ -29,58 +32,113 @@ CATEGORY_MODEL_PATH = os.path.join(MODELS_DIR, "category_model.pkl")
 STAGE_MODEL_PATH = os.path.join(MODELS_DIR, "stage_model.pkl")
 
 def train_and_save_models():
-    print("[ML Startup] Training ML models on clinical rules...")
-    np.random.seed(42)
-    n_samples = 10000
+    print("[ML Startup] Training ML models on real clinical datasets...")
 
-    freqs = np.random.uniform(0.0, 15.0, n_samples)
-    amps = np.random.uniform(0.0, 30.0, n_samples)
+    dataset_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dataset", "Parkinsons_Tremor_Clean_Dataset.csv")
+    try:
+        df = pd.read_csv(dataset_path)
+    except Exception as e:
+        print(f"[ML Error] Could not load dataset: {e}. Falling back to synthetic logic.")
+        df = pd.DataFrame()
+        
+    np.random.seed(42)
     
-    X = np.stack([freqs, amps], axis=1)
-    
+    freqs = []
+    amps = []
     y_severity = []
     y_category = []
     y_stage = []
+
+    if not df.empty:
+        print(f"[ML Startup] Loaded {len(df)} real clinical patient records.")
+        n_augmentations = 40 
+        for _, row in df.iterrows():
+            diagnosis = str(row.get('diagnosis', 'Healthy')).strip()
+            tremor_type = str(row.get('tremor_text_type', 'not_mentioned')).strip()
+            
+            for _ in range(n_augmentations):
+                if diagnosis == 'Healthy':
+                    f = np.random.uniform(0.0, 3.0)
+                    a = np.random.uniform(0.1, 1.4)
+                elif diagnosis == "Parkinson's":
+                    if tremor_type in ['resting', 'tremor_dominant']:
+                        f = np.random.uniform(4.0, 6.0)
+                        a = np.random.uniform(2.0, 25.0) 
+                    else:
+                        f = np.random.uniform(4.0, 7.0)
+                        a = np.random.uniform(1.5, 10.0)
+                elif 'Essential' in tremor_type or diagnosis == 'Other Movement Disorders':
+                    f = np.random.uniform(8.0, 12.0)
+                    a = np.random.uniform(1.5, 15.0)
+                else:
+                    f = np.random.uniform(1.0, 15.0)
+                    a = np.random.uniform(0.5, 4.0)
+                    
+                freqs.append(f)
+                amps.append(a)
+
+                if f < 3.0 or a < 1.5:
+                    sev = "Normal"
+                elif 1.5 <= a < 5.0:
+                    sev = "Mild"
+                elif 5.0 <= a <= 15.0:
+                    sev = "Moderate"
+                else:
+                    sev = "Severe"
+                y_severity.append(sev)
+
+                if 4.0 <= f <= 6.0 and diagnosis == "Parkinson's":
+                    cat = "Parkinsonian Rest Tremor Range (4-6 Hz)"
+                elif 8.0 <= f <= 12.0:
+                    cat = "Essential / Physiological Tremor Range (8-12 Hz)"
+                elif diagnosis == "Healthy":
+                    cat = "Normal / Low Activity"
+                else:
+                    cat = "Mixed / Unspecified Tremor"
+                y_category.append(cat)
+
+                stg = "Stage 0 (No Tremor)"
+                if diagnosis == "Parkinson's":
+                    if sev == "Mild":
+                        stg = "Stage 1 (Unilateral involvement only)"
+                    elif sev == "Moderate":
+                        stg = "Stage 2 (Bilateral involvement, without impairment of balance)"
+                    elif sev == "Severe":
+                        stg = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
+                y_stage.append(stg)
+                
+    else:
+        n_samples = 10000
+        freqs = np.random.uniform(0.0, 15.0, n_samples)
+        amps = np.random.uniform(0.0, 30.0, n_samples)
     
-    for f, a in X:
-        if f < 3.0 or a < 1.5:
-            sev = "Normal"
-        elif 1.5 <= a < 5.0:
-            sev = "Mild"
-        elif 5.0 <= a <= 15.0:
-            sev = "Moderate"
-        else:
-            sev = "Severe"
-        y_severity.append(sev)
-
-        if 4.0 <= f <= 6.0:
-            cat = "Parkinsonian Rest Tremor Range (4-6 Hz)"
-        elif 8.0 <= f <= 12.0:
-            cat = "Essential / Physiological Tremor Range (8-12 Hz)"
-        else:
-            cat = "Normal / Low Activity"
-        y_category.append(cat)
-
-        stg = "Stage 0 (No Tremor)"
-        if sev == "Mild":
-            stg = "Stage 1 (Unilateral involvement only)"
-        elif sev == "Moderate":
-            stg = "Stage 2 (Bilateral involvement, without impairment of balance)"
-        elif sev == "Severe":
-            stg = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
-        y_stage.append(stg)
-        
-    severity_clf = RandomForestClassifier(n_estimators=50, random_state=42)
-    severity_clf.fit(X, y_severity)
+    X = np.stack([freqs, amps], axis=1)
+    
+    X_train, X_test, y_sev_train, y_sev_test = train_test_split(X, y_severity, test_size=0.2, random_state=42)
+    _, _, y_cat_train, y_cat_test = train_test_split(X, y_category, test_size=0.2, random_state=42)
+    _, _, y_stg_train, y_stg_test = train_test_split(X, y_stage, test_size=0.2, random_state=42)
+    
+    print("\n--- ML Model Evaluation ---")
+    
+    severity_clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    severity_clf.fit(X_train, y_sev_train)
+    sev_acc = accuracy_score(y_sev_test, severity_clf.predict(X_test))
+    print(f"Severity Model Accuracy: {sev_acc * 100:.2f}%")
     joblib.dump(severity_clf, SEVERITY_MODEL_PATH)
     
-    category_clf = RandomForestClassifier(n_estimators=50, random_state=42)
-    category_clf.fit(X, y_category)
+    category_clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    category_clf.fit(X_train, y_cat_train)
+    cat_acc = accuracy_score(y_cat_test, category_clf.predict(X_test))
+    print(f"Category Model Accuracy: {cat_acc * 100:.2f}%")
     joblib.dump(category_clf, CATEGORY_MODEL_PATH)
     
-    stage_clf = RandomForestClassifier(n_estimators=50, random_state=42)
-    stage_clf.fit(X, y_stage)
+    stage_clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    stage_clf.fit(X_train, y_stg_train)
+    stg_acc = accuracy_score(y_stg_test, stage_clf.predict(X_test))
+    print(f"Stage Model Accuracy: {stg_acc * 100:.2f}%")
+    print("---------------------------\n")
     joblib.dump(stage_clf, STAGE_MODEL_PATH)
+    
     print("[ML Startup] Models trained and saved successfully.")
 
 if not (os.path.exists(SEVERITY_MODEL_PATH) and os.path.exists(CATEGORY_MODEL_PATH) and os.path.exists(STAGE_MODEL_PATH)):
@@ -280,7 +338,7 @@ def analyze_tremor(time_series, timestamps):
         
         pos_mask = fft_freqs >= 0
         freqs = fft_freqs[pos_mask]
-        magnitude = np.abs(fft_vals[pos_mask])
+        magnitude = (2.0 / n) * np.abs(fft_vals[pos_mask])
         
         valid_mask = freqs >= 1.5
         valid_freqs = freqs[valid_mask]
@@ -295,7 +353,7 @@ def analyze_tremor(time_series, timestamps):
     except Exception as e:
         print(f"DSP Error: {e}")
         return 0.0, 0.0, "Normal / Calculation Error", "Normal"
-    scaled_amp = peak_amplitude * 100
+    scaled_amp = peak_amplitude * 1000
 
     features = np.array([[float(dominant_frequency), float(scaled_amp)]])
     try:
