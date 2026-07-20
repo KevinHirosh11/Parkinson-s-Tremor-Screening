@@ -3,7 +3,33 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include "secrets.h"
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+unsigned long testStartTime = 0;
+bool isProcessing = false;
+bool isShowingResult = false;
+unsigned long resultDisplayStartTime = 0;
+float finalX = 0.0, finalY = 0.0, finalZ = 0.0;
+int finalPPG = 0;
+int finalBPM = 0;
+
+void showIdleScreen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(31, 20);
+  display.print("Tremor Plot");
+  display.setCursor(46, 36);
+  display.print("Device");
+  display.display();
+}
 
 // #define MPU_X_PIN 32
 // #define MPU_Y_PIN 33
@@ -35,6 +61,12 @@ void setup() {
   pinMode(PPG_PIN, INPUT);
 
   Wire.begin(21, 22);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+  } else {
+    showIdleScreen();
+  }
+
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050 chip");
     while (1) {
@@ -52,6 +84,28 @@ void setup() {
 }
 
 void loop() {
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "START" || cmd == "RESET") {
+      testStartTime = millis();
+      isProcessing = true;
+      isShowingResult = false;
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(26, 16);
+      display.println("Processing...");
+      display.setCursor(30, 36);
+      display.print("Time: 0s");
+      display.display();
+    } else if (cmd == "STOP") {
+      isProcessing = false;
+      isShowingResult = false;
+      showIdleScreen();
+    }
+  }
+
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
@@ -108,33 +162,86 @@ void loop() {
     ppg_bpm = 0;
   }
 
-  Serial.print("IMU:");
-  Serial.print(a.acceleration.x);
-  Serial.print(",");
-  Serial.print(a.acceleration.y);
-  Serial.print(",");
-  Serial.print(a.acceleration.z);
-  Serial.print("|PPG:");
-  Serial.print(ppg_val);
-  Serial.print("|BPM:");
-  Serial.println(ppg_bpm);
+  if (isProcessing) {
+    unsigned long elapsed = millis() - testStartTime;
+    if (elapsed >= 30000) {
+      isProcessing = false;
+      isShowingResult = true;
+      resultDisplayStartTime = millis();
+      finalX = a.acceleration.x;
+      finalY = a.acceleration.y;
+      finalZ = a.acceleration.z;
+      finalPPG = ppg_val;
+      finalBPM = ppg_bpm;
 
-  if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
-    wifiConnected = true;
-    Serial.println("\nConnected to Wi-Fi");
-
-    config.host = FIREBASE_HOST;
-    config.signer.tokens.legacy_token = FIREBASE_AUTH;
-    Firebase.begin(&config, &auth);
-    Firebase.reconnectWiFi(true);
-    firebaseReady = true;
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      
+      display.setCursor(0, 10);
+      display.print("X: "); display.println(finalX, 2);
+      display.setCursor(0, 26);
+      display.print("Y: "); display.println(finalY, 2);
+      display.setCursor(0, 42);
+      display.print("Z: "); display.println(finalZ, 2);
+      
+      display.drawFastVLine(64, 8, 48, SSD1306_WHITE);
+      
+      display.setCursor(72, 20);
+      display.print("BPM:");
+      display.setCursor(72, 36);
+      display.print(finalBPM);
+      
+      display.display();
+    } else {
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(26, 16);
+      display.println("Processing...");
+      display.setCursor(30, 36);
+      display.print("Time: ");
+      display.print(elapsed / 1000);
+      display.println("s");
+      display.display();
+    }
+  }
+  else if (isShowingResult) {
+    if (millis() - resultDisplayStartTime >= 60000) {
+      isShowingResult = false;
+      showIdleScreen();
+    }
   }
 
-  if (firebaseReady) {
-    Firebase.setFloat(firebaseData, "/sensorData/imu/x", a.acceleration.x);
-    Firebase.setFloat(firebaseData, "/sensorData/imu/y", a.acceleration.y);
-    Firebase.setFloat(firebaseData, "/sensorData/imu/z", a.acceleration.z);
-    Firebase.setInt(firebaseData, "/sensorData/ppg", ppg_val);
+  if (isProcessing) {
+    Serial.print("IMU:");
+    Serial.print(a.acceleration.x);
+    Serial.print(",");
+    Serial.print(a.acceleration.y);
+    Serial.print(",");
+    Serial.print(a.acceleration.z);
+    Serial.print("|PPG:");
+    Serial.print(ppg_val);
+    Serial.print("|BPM:");
+    Serial.println(ppg_bpm);
+
+    if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
+      wifiConnected = true;
+      Serial.println("\nConnected to Wi-Fi");
+
+      config.host = FIREBASE_HOST;
+      config.signer.tokens.legacy_token = FIREBASE_AUTH;
+      Firebase.begin(&config, &auth);
+      Firebase.reconnectWiFi(true);
+      firebaseReady = true;
+    }
+
+    if (firebaseReady) {
+      Firebase.setFloat(firebaseData, "/sensorData/imu/x", a.acceleration.x);
+      Firebase.setFloat(firebaseData, "/sensorData/imu/y", a.acceleration.y);
+      Firebase.setFloat(firebaseData, "/sensorData/imu/z", a.acceleration.z);
+      Firebase.setInt(firebaseData, "/sensorData/ppg", ppg_val);
+    }
   }
 
   delay(33); 

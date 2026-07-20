@@ -207,6 +207,7 @@ class SerialSensorReader:
             import time
             time.sleep(2)
             self.ser.reset_input_buffer()
+            self.ser.write(b"START\n")
             self.running = True
             self.thread = threading.Thread(target=self._read_loop, daemon=True)
             self.thread.start()
@@ -389,27 +390,31 @@ async def websocket_endpoint(websocket: WebSocket):
                     "message": hw_msg
                 })
                 
-                cap = None
-                try:
-                    cap = cv2.VideoCapture(0)
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                    if not cap.isOpened():
-                        print("[WS] Webcam not available, running in sensor-only mode")
-                        cap.release()
-                        cap = None
-                    else:
-                        print("[WS] Webcam opened successfully")
-                except Exception as e:
-                    print(f"[WS] Webcam error: {e}")
-                    cap = None
-                
                 recording = True
-                start_time = time.time()
                 coordinate_history = []
                 timestamp_history = []
                 
                 print("[WS] Started live session")
+                start_time = time.time()
+                
+                cap = None
+                def init_cam():
+                    nonlocal cap
+                    try:
+                        c = cv2.VideoCapture(0)
+                        c.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        if not c.isOpened():
+                            print("[WS] Webcam not available, running in sensor-only mode")
+                            c.release()
+                        else:
+                            print("[WS] Webcam opened successfully")
+                            cap = c
+                    except Exception as e:
+                        print(f"[WS] Webcam error: {e}")
+                
+                threading.Thread(target=init_cam, daemon=True).start()
+                
                 while recording:
                     current_time = time.time()
                     elapsed = current_time - start_time
