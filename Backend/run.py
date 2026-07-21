@@ -225,13 +225,10 @@ class SerialSensorReader:
     def _simulation_loop(self):
         t = 0.0
         while self.running:
-            # Simulate PPG signal (sine wave + noise)
             ppg_val = int(2048 + 400 * np.sin(2 * np.pi * 1.25 * t) + np.random.normal(0, 15))
             self.latest_ppg = ppg_val
-            # Simulate a realistic heart rate (e.g. oscillating between 71 and 75)
             self.latest_bpm = int(73 + 2 * np.sin(2 * np.pi * 0.03 * t))
             
-            # Simulate minor IMU jitter
             self.latest_imu = {
                 "x": float(np.random.normal(0, 0.03)),
                 "y": float(np.random.normal(0, 0.03)),
