@@ -165,14 +165,36 @@ void loop() {
   if (isProcessing) {
     unsigned long elapsed = millis() - testStartTime;
     if (elapsed >= 30000) {
-      isProcessing = false;
-      isShowingResult = true;
-      resultDisplayStartTime = millis();
       finalX = a.acceleration.x;
       finalY = a.acceleration.y;
       finalZ = a.acceleration.z;
       finalPPG = ppg_val;
       finalBPM = ppg_bpm;
+
+      // Print final values to Serial so the backend gets the exact final values
+      Serial.print("IMU:");
+      Serial.print(finalX);
+      Serial.print(",");
+      Serial.print(finalY);
+      Serial.print(",");
+      Serial.print(finalZ);
+      Serial.print("|PPG:");
+      Serial.print(finalPPG);
+      Serial.print("|BPM:");
+      Serial.println(finalBPM);
+
+      // Write final values to Firebase one last time
+      if (firebaseReady) {
+        Firebase.setFloat(firebaseData, "/sensorData/imu/x", finalX);
+        Firebase.setFloat(firebaseData, "/sensorData/imu/y", finalY);
+        Firebase.setFloat(firebaseData, "/sensorData/imu/z", finalZ);
+        Firebase.setInt(firebaseData, "/sensorData/ppg", finalPPG);
+        Firebase.setInt(firebaseData, "/sensorData/bpm", finalBPM);
+      }
+
+      isProcessing = false;
+      isShowingResult = true;
+      resultDisplayStartTime = millis();
 
       display.clearDisplay();
       display.setTextSize(1);
@@ -241,6 +263,7 @@ void loop() {
       Firebase.setFloat(firebaseData, "/sensorData/imu/y", a.acceleration.y);
       Firebase.setFloat(firebaseData, "/sensorData/imu/z", a.acceleration.z);
       Firebase.setInt(firebaseData, "/sensorData/ppg", ppg_val);
+      Firebase.setInt(firebaseData, "/sensorData/bpm", ppg_bpm);
     }
   }
 

@@ -27,7 +27,7 @@ const database = getDatabase(app);
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000';
-const unsubscribeFirebase = () => {};
+let unsubscribeFirebase = () => {};
 
 function App() {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -62,6 +62,7 @@ function App() {
   ]);
 
   const wsRef = useRef(null);
+  const isEspUsb = useRef(false);
   useEffect(() => {
     const initOsc = [];
     const initFft = [];
@@ -85,6 +86,7 @@ function App() {
   };
 
   const handleStartSession = () => {
+    isEspUsb.current = false;
     if (wsRef.current) {
       wsRef.current.close();
     }
@@ -111,9 +113,43 @@ function App() {
       
       if (data.event === "hardware_status") {
         setIsEspConnected(data.connected);
+        isEspUsb.current = data.connected;
         setHardwareMessage(data.message || '');
         if (!data.connected && data.message) {
           setFinalStatus("Warning: " + data.message);
+        }
+        
+        if (!data.connected) {
+          console.log("[Firebase] USB not connected. Subscribing to Firebase Realtime Database...");
+          const sensorRef = ref(database, 'sensorData');
+          unsubscribeFirebase = onValue(sensorRef, (snapshot) => {
+            const fbData = snapshot.val();
+            if (fbData) {
+              const rawPpg = fbData.ppg || 50;
+              
+              setOscilloscopeData(prev => {
+                const slice = prev.slice(-39);
+                return [...slice, {
+                  time: Date.now(),
+                  x: fbData.imu ? fbData.imu.x : 0,
+                  y: fbData.imu ? fbData.imu.y : 0,
+                  z: fbData.imu ? fbData.imu.z : 0
+                }];
+              });
+
+              setPpgData(prev => {
+                const slice = prev.slice(-39);
+                return [...slice, {
+                  time: Date.now(),
+                  val: rawPpg
+                }];
+              });
+              
+              if (fbData.bpm !== undefined) {
+                setHeartRate(fbData.bpm);
+              }
+            }
+          });
         }
       } 
       
@@ -124,31 +160,33 @@ function App() {
         setCurrentFreq(data.live_frequency);
         setAmplitude(data.live_amplitude);
         
-        if (data.imu && data.imu.x !== undefined) {
-          setIsEspConnected(data.imu.x !== 0.0 || data.imu.y !== 0.0 || data.imu.z !== 0.0);
-          setOscilloscopeData(prev => {
-            const slice = prev.slice(-39);
-            return [...slice, {
-              time: Date.now(),
-              x: data.imu.x,
-              y: data.imu.y,
-              z: data.imu.z
-            }];
-          });
-        }
-        if (data.ppg !== undefined) {
-           setPpgData(prev => {
-            const slice = prev.slice(-39);
-            return [...slice, {
-              time: Date.now(),
-              val: data.ppg
-            }];
-          });
-        }
-        if (data.bpm !== undefined) {
-          setHeartRate(data.bpm);
-        } else {
-          setHeartRate(0);
+        if (isEspUsb.current) {
+          if (data.imu && data.imu.x !== undefined) {
+            setIsEspConnected(data.imu.x !== 0.0 || data.imu.y !== 0.0 || data.imu.z !== 0.0);
+            setOscilloscopeData(prev => {
+              const slice = prev.slice(-39);
+              return [...slice, {
+                time: Date.now(),
+                x: data.imu.x,
+                y: data.imu.y,
+                z: data.imu.z
+              }];
+            });
+          }
+          if (data.ppg !== undefined) {
+             setPpgData(prev => {
+              const slice = prev.slice(-39);
+              return [...slice, {
+                time: Date.now(),
+                val: data.ppg
+              }];
+            });
+          }
+          if (data.bpm !== undefined) {
+            setHeartRate(data.bpm);
+          } else {
+            setHeartRate(0);
+          }
         }
 
         if (data.live_severity) {
@@ -673,10 +711,19 @@ function App() {
                 </div>
               </div>
               <div className="flex flex-col space-y-2 h-full min-h-0">
-                <span className="text-xs font-semibold text-slate-350 flex items-center space-x-1">
-                  <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse mr-1"></span>
-                  <span>Vibration Oscilloscope</span>
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-350 flex items-center space-x-1">
+                    <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse mr-1"></span>
+                    <span>Vibration Oscilloscope</span>
+                  </span>
+                  {oscilloscopeData.length > 0 && (
+                    <div className="flex space-x-3 text-xs font-mono">
+                      <span className="text-cyan-400">X: {oscilloscopeData[oscilloscopeData.length - 1].x.toFixed(2)}</span>
+                      <span className="text-emerald-400">Y: {oscilloscopeData[oscilloscopeData.length - 1].y.toFixed(2)}</span>
+                      <span className="text-purple-400">Z: {oscilloscopeData[oscilloscopeData.length - 1].z.toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
                 
                 <div className="flex-1 min-h-0 w-full bg-[#070b19]/60 border border-slate-800 rounded-lg p-2">
                   <ResponsiveContainer width="100%" height="100%">
