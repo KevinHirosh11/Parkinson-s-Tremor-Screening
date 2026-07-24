@@ -1,1 +1,0 @@
-# Parkinson-s-Tremor-Screening

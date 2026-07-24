@@ -27,9 +27,7 @@ import pandas as pd
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-SEVERITY_MODEL_PATH = os.path.join(MODELS_DIR, "severity_model.pkl")
-CATEGORY_MODEL_PATH = os.path.join(MODELS_DIR, "category_model.pkl")
-STAGE_MODEL_PATH = os.path.join(MODELS_DIR, "stage_model.pkl")
+TREMOR_MODEL_PATH = os.path.join(MODELS_DIR, "tremor_multi_model.pkl")
 
 def train_and_save_models():
     print("[ML Startup] Training ML models on real clinical datasets...")
@@ -51,12 +49,22 @@ def train_and_save_models():
 
     if not df.empty:
         print(f"[ML Startup] Loaded {len(df)} real clinical patient records.")
-        n_augmentations = 40 
+        
+        diag_aug_map = {
+            "Parkinson's": 40,
+            "Healthy": 140,
+            "Other Movement Disorders": 180,
+            "Essential Tremor": 390,
+            "Atypical Parkinsonism": 730,
+            "Multiple Sclerosis": 1000
+        }
+
         for _, row in df.iterrows():
             diagnosis = str(row.get('diagnosis', 'Healthy')).strip()
             tremor_type = str(row.get('tremor_text_type', 'not_mentioned')).strip()
             
-            for _ in range(n_augmentations):
+            n_augs = diag_aug_map.get(diagnosis, 40)
+            for _ in range(n_augs):
                 if diagnosis == 'Healthy':
                     f = np.random.uniform(0.0, 3.0)
                     a = np.random.uniform(0.1, 1.4)
@@ -113,40 +121,32 @@ def train_and_save_models():
         amps = np.random.uniform(0.0, 30.0, n_samples)
     
     X = np.stack([freqs, amps], axis=1)
+    y = np.column_stack([y_severity, y_category, y_stage])
     
-    X_train, X_test, y_sev_train, y_sev_test = train_test_split(X, y_severity, test_size=0.2, random_state=42)
-    _, _, y_cat_train, y_cat_test = train_test_split(X, y_category, test_size=0.2, random_state=42)
-    _, _, y_stg_train, y_stg_test = train_test_split(X, y_stage, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
     print("\n--- ML Model Evaluation ---")
     
-    severity_clf = RandomForestClassifier(n_estimators=100, random_state=42)
-    severity_clf.fit(X_train, y_sev_train)
-    sev_acc = accuracy_score(y_sev_test, severity_clf.predict(X_test))
+    tremor_clf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42)
+    tremor_clf.fit(X_train, y_train)
+    
+    predictions = tremor_clf.predict(X_test)
+    sev_acc = accuracy_score(y_test[:, 0], predictions[:, 0])
+    cat_acc = accuracy_score(y_test[:, 1], predictions[:, 1])
+    stg_acc = accuracy_score(y_test[:, 2], predictions[:, 2])
+    
     print(f"Severity Model Accuracy: {sev_acc * 100:.2f}%")
-    joblib.dump(severity_clf, SEVERITY_MODEL_PATH)
-    
-    category_clf = RandomForestClassifier(n_estimators=100, random_state=42)
-    category_clf.fit(X_train, y_cat_train)
-    cat_acc = accuracy_score(y_cat_test, category_clf.predict(X_test))
     print(f"Category Model Accuracy: {cat_acc * 100:.2f}%")
-    joblib.dump(category_clf, CATEGORY_MODEL_PATH)
-    
-    stage_clf = RandomForestClassifier(n_estimators=100, random_state=42)
-    stage_clf.fit(X_train, y_stg_train)
-    stg_acc = accuracy_score(y_stg_test, stage_clf.predict(X_test))
     print(f"Stage Model Accuracy: {stg_acc * 100:.2f}%")
     print("---------------------------\n")
-    joblib.dump(stage_clf, STAGE_MODEL_PATH)
+    joblib.dump(tremor_clf, TREMOR_MODEL_PATH)
     
-    print("[ML Startup] Models trained and saved successfully.")
+    print("[ML Startup] Multi-output model trained and saved successfully.")
 
-if not (os.path.exists(SEVERITY_MODEL_PATH) and os.path.exists(CATEGORY_MODEL_PATH) and os.path.exists(STAGE_MODEL_PATH)):
+if not os.path.exists(TREMOR_MODEL_PATH):
     train_and_save_models()
 
-severity_clf = joblib.load(SEVERITY_MODEL_PATH)
-category_clf = joblib.load(CATEGORY_MODEL_PATH)
-stage_clf = joblib.load(STAGE_MODEL_PATH)
+tremor_clf = joblib.load(TREMOR_MODEL_PATH)
 
 app = FastAPI(title="Tremor Plot Backend")
 app.add_middleware(
@@ -355,8 +355,9 @@ def analyze_tremor(time_series, timestamps):
 
     features = np.array([[float(dominant_frequency), float(scaled_amp)]])
     try:
-        severity = severity_clf.predict(features)[0]
-        category = category_clf.predict(features)[0]
+        preds = tremor_clf.predict(features)[0]
+        severity = preds[0]
+        category = preds[1]
     except Exception as e:
         print(f"[ML Prediction Error] {e}")
         severity = "Normal"
@@ -585,7 +586,8 @@ async def upload_video(file: UploadFile = File(...)):
         # Predict stage using ML model
         try:
             features = np.array([[float(frequency), float(amplitude)]])
-            stage = stage_clf.predict(features)[0]
+            preds = tremor_clf.predict(features)[0]
+            stage = preds[2]
         except Exception as e:
             print(f"[ML Stage Prediction Error] {e}")
             stage = "Stage 0 (No Tremor)"
