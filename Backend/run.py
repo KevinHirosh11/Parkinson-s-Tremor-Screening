@@ -6,6 +6,10 @@ import base64
 import asyncio
 import threading
 import os
+import io
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt
 import mediapipe as mp
 import serial
@@ -29,135 +33,6 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 TREMOR_MODEL_PATH = os.path.join(MODELS_DIR, "tremor_multi_model.pkl")
 
-def train_and_save_models():
-    print("[ML Startup] Training ML models on real clinical datasets...")
-
-    dataset_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dataset", "Parkinsons_Tremor_Clean_Dataset.csv")
-    try:
-        df = pd.read_csv(dataset_path)
-    except Exception as e:
-        print(f"[ML Error] Could not load dataset: {e}. Falling back to synthetic logic.")
-        df = pd.DataFrame()
-        
-    np.random.seed(42)
-    
-    freqs = []
-    amps = []
-    y_severity = []
-    y_category = []
-    y_stage = []
-
-    if not df.empty:
-        print(f"[ML Startup] Loaded {len(df)} real clinical patient records.")
-        
-        diag_aug_map = {
-            "Parkinson's": 40,
-            "Healthy": 140,
-            "Other Movement Disorders": 180,
-            "Essential Tremor": 390,
-            "Atypical Parkinsonism": 730,
-            "Multiple Sclerosis": 1000
-        }
-
-        for _, row in df.iterrows():
-            diagnosis = str(row.get('diagnosis', 'Healthy')).strip()
-            tremor_type = str(row.get('tremor_text_type', 'not_mentioned')).strip()
-            
-            n_augs = diag_aug_map.get(diagnosis, 40)
-            for _ in range(n_augs):
-                if diagnosis == 'Healthy':
-                    f = np.random.uniform(0.0, 3.0)
-                    a = np.random.uniform(0.1, 1.4)
-                elif diagnosis == "Parkinson's":
-                    if tremor_type in ['resting', 'tremor_dominant']:
-                        f = np.random.uniform(4.0, 6.0)
-                        a = np.random.uniform(2.0, 25.0) 
-                    else:
-                        f = np.random.uniform(4.0, 7.0)
-                        a = np.random.uniform(1.5, 10.0)
-                elif 'Essential' in tremor_type or diagnosis == 'Other Movement Disorders':
-                    f = np.random.uniform(8.0, 12.0)
-                    a = np.random.uniform(1.5, 15.0)
-                else:
-                    f = np.random.uniform(1.0, 15.0)
-                    a = np.random.uniform(0.5, 4.0)
-                    
-                freqs.append(f)
-                amps.append(a)
-
-                if f < 3.0 or a < 1.5:
-                    sev = "Normal"
-                elif 1.5 <= a < 5.0:
-                    sev = "Mild"
-                elif 5.0 <= a <= 15.0:
-                    sev = "Moderate"
-                else:
-                    sev = "Severe"
-                y_severity.append(sev)
-
-                if 4.0 <= f <= 6.0 and diagnosis == "Parkinson's":
-                    cat = "Parkinsonian Rest Tremor Range (4-6 Hz)"
-                elif 8.0 <= f <= 12.0:
-                    cat = "Essential / Physiological Tremor Range (8-12 Hz)"
-                elif diagnosis == "Healthy":
-                    cat = "Normal / Low Activity"
-                else:
-                    cat = "Mixed / Unspecified Tremor"
-                y_category.append(cat)
-
-                stg = "Stage 0 (No Tremor)"
-                if diagnosis == "Parkinson's":
-                    if sev == "Mild":
-                        stg = "Stage 1 (Unilateral involvement only)"
-                    elif sev == "Moderate":
-                        stg = "Stage 2 (Bilateral involvement, without impairment of balance)"
-                    elif sev == "Severe":
-                        stg = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
-                y_stage.append(stg)
-                
-    else:
-        n_samples = 10000
-        freqs = np.random.uniform(0.0, 15.0, n_samples)
-        amps = np.random.uniform(0.0, 30.0, n_samples)
-    
-    X = np.stack([freqs, amps], axis=1)
-    y = np.column_stack([y_severity, y_category, y_stage])
-    
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    print("\n--- ML Model Evaluation ---")
-    
-    tremor_clf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42)
-    tremor_clf.fit(X_train, y_train)
-    
-    predictions = tremor_clf.predict(X_test)
-    sev_acc = accuracy_score(y_test[:, 0], predictions[:, 0])
-    cat_acc = accuracy_score(y_test[:, 1], predictions[:, 1])
-    stg_acc = accuracy_score(y_test[:, 2], predictions[:, 2])
-    
-    print(f"Severity Model Accuracy: {sev_acc * 100:.2f}%")
-    print(f"Category Model Accuracy: {cat_acc * 100:.2f}%")
-    print(f"Stage Model Accuracy: {stg_acc * 100:.2f}%")
-    print("---------------------------\n")
-    joblib.dump(tremor_clf, TREMOR_MODEL_PATH)
-    
-    print("[ML Startup] Multi-output model trained and saved successfully.")
-
-if not os.path.exists(TREMOR_MODEL_PATH):
-    train_and_save_models()
-
-tremor_clf = joblib.load(TREMOR_MODEL_PATH)
-
-app = FastAPI(title="Tremor Plot Backend")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-)
-
 RECORD_TIME = 30.0 
 TARGET_FPS = 30.0
 dt = 1.0 / TARGET_FPS
@@ -171,6 +46,427 @@ hands = mp_hands.Hands(
     model_complexity=1
 )
 mp_draw = mp.solutions.drawing_utils
+
+def detect_hand_mediapipe(frame):
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(rgb_frame)
+    
+    if not results.multi_hand_landmarks:
+        return None, None
+        
+    hand_landmarks = results.multi_hand_landmarks[0]
+    index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+    mcp = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
+    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
+
+    tx = index_tip.x * 0.7 + mcp.x * 0.2 + wrist.x * 0.1
+    ty = index_tip.y * 0.7 + mcp.y * 0.2 + wrist.y * 0.1
+    
+    h, w, _ = frame.shape
+    cx, cy = int(tx * w), int(ty * h)
+    
+    return hand_landmarks, (cx, cy)
+
+def butter_lowpass_filter(data, cutoff, fs, order=4):
+    nyq = 0.5 * fs
+    if cutoff >= nyq:
+        cutoff = nyq - 0.1
+    normal_cutoff = cutoff / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    y = filtfilt(b, a, data)
+    return y
+
+def analyze_tremor(time_series, timestamps):
+    if len(time_series) < 20:
+        return 0.0, 0.0, "Normal / Insufficient Data", "Normal"
+        
+    t_uniform = np.linspace(timestamps[0], timestamps[-1], len(timestamps))
+
+    x_coords = np.array([pt[0] for pt in time_series])
+    y_coords = np.array([pt[1] for pt in time_series])
+    
+    x_interp = np.interp(t_uniform, timestamps, x_coords)
+    y_interp = np.interp(t_uniform, timestamps, y_coords)
+    
+    x_detrend = x_interp - np.mean(x_interp)
+    y_detrend = y_interp - np.mean(y_interp)
+    
+    displacement = np.sqrt(x_detrend**2 + y_detrend**2)
+    
+    fs = TARGET_FPS
+    try:
+        filtered_signal = butter_lowpass_filter(displacement, cutoff=12.0, fs=fs, order=2)
+        window = np.hanning(len(filtered_signal))
+        windowed_signal = filtered_signal * window
+        
+        n = len(windowed_signal)
+        fft_vals = np.fft.fft(windowed_signal)
+        fft_freqs = np.fft.fftfreq(n, d=dt)
+        
+        pos_mask = fft_freqs >= 0
+        freqs = fft_freqs[pos_mask]
+        magnitude = (2.0 / n) * np.abs(fft_vals[pos_mask])
+        
+        valid_mask = freqs >= 1.5
+        valid_freqs = freqs[valid_mask]
+        valid_mag = magnitude[valid_mask]
+        
+        if len(valid_freqs) == 0:
+            return 0.0, 0.0, "Normal", "Normal"
+            
+        peak_idx = np.argmax(valid_mag)
+        dominant_frequency = valid_freqs[peak_idx]
+        peak_amplitude = valid_mag[peak_idx]
+    except Exception as e:
+        print(f"DSP Error: {e}")
+        return 0.0, 0.0, "Normal / Calculation Error", "Normal"
+    scaled_amp = peak_amplitude * 1000
+
+    try:
+        preds = tremor_clf.predict(np.array([[float(dominant_frequency), float(scaled_amp)]]))[0]
+        severity = preds[0]
+        category = preds[1]
+    except Exception:
+        if dominant_frequency < 3.0 or scaled_amp < 1.5:
+            severity = "Normal"
+            category = "Normal / Low Activity"
+        elif 1.5 <= scaled_amp < 5.0:
+            severity = "Mild"
+            category = "Mixed / Unspecified Tremor"
+        elif 5.0 <= scaled_amp <= 15.0:
+            severity = "Moderate"
+            category = "Mixed / Unspecified Tremor"
+        else:
+            severity = "Severe"
+            category = "Mixed / Unspecified Tremor"
+            
+        if 4.0 <= dominant_frequency <= 6.0:
+            category = "Parkinsonian Rest Tremor Range (4-6 Hz)"
+        elif 8.0 <= dominant_frequency <= 12.0:
+            category = "Essential / Physiological Tremor Range (8-12 Hz)"
+            
+    return float(dominant_frequency), float(scaled_amp), category, severity
+
+def load_video_coordinates(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None, None, 30.0
+    coordinate_history = []
+    timestamp_history = []
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    frame_delay = 1.0 / fps
+    elapsed = 0.0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        _, finger_tip = detect_hand_mediapipe(frame)
+        if finger_tip is not None:
+            h, w, _ = frame.shape
+            cx, cy = finger_tip
+            coordinate_history.append((cx / w, cy / h))
+            timestamp_history.append(elapsed)
+        elapsed += frame_delay
+    cap.release()
+    return coordinate_history, timestamp_history, fps
+
+def generate_prediction_plot(current_freq, current_amp, current_diagnosis):
+    global CACHED_VIDEO_DATA
+    plt.figure(figsize=(8, 5))
+    
+    colors = {"Healthy": "green", "Parkinson's": "red", "Essential Tremor": "orange", "Other Movement Disorders": "blue"}
+    markers = {"Healthy": "o", "Parkinson's": "X", "Essential Tremor": "s", "Other Movement Disorders": "^"}
+    
+    np.random.seed(42)
+    for video_name, data in CACHED_VIDEO_DATA.items():
+        coords = np.array(data["coords"])
+        times = np.array(data["times"])
+        diagnosis = data["diagnosis"]
+        
+        mean_coords = np.mean(coords, axis=0)
+        coords_detrend = coords - mean_coords
+
+        plot_freqs = []
+        plot_amps = []
+        for _ in range(40):
+            if diagnosis == "Healthy":
+                alpha = np.random.uniform(0.8, 3.0)
+                beta = np.random.uniform(0.1, 1.3)
+            elif diagnosis == "Parkinson's":
+                alpha = np.random.uniform(0.6, 1.5)
+                beta = np.random.uniform(1.2, 8.0)
+            elif diagnosis == "Essential Tremor":
+                alpha = np.random.uniform(0.3, 0.9)
+                beta = np.random.uniform(1.0, 7.0)
+            else:
+                alpha = np.random.uniform(0.4, 2.5)
+                beta = np.random.uniform(0.5, 4.0)
+                
+            aug_times = times * alpha
+            aug_coords = (coords_detrend * beta) + mean_coords
+            aug_coords += np.random.normal(0, 0.001, aug_coords.shape)
+            
+            f, a, _, _ = analyze_tremor(aug_coords.tolist(), aug_times.tolist())
+            if f > 0 and a > 0:
+                plot_freqs.append(f)
+                plot_amps.append(a)
+                
+        if plot_freqs:
+            plt.scatter(
+                plot_freqs, 
+                plot_amps, 
+                color=colors.get(diagnosis, "gray"), 
+                marker=markers.get(diagnosis, "o"), 
+                alpha=0.4, 
+                edgecolors='none', 
+                s=35
+            )
+
+    for diag, color in colors.items():
+        plt.scatter([], [], color=color, marker=markers.get(diag, "o"), label=diag, s=50)
+        
+    plt.scatter(
+        [current_freq], 
+        [current_amp], 
+        color="yellow", 
+        edgecolors="black", 
+        marker="*", 
+        s=300, 
+        linewidths=2.0, 
+        label="Current Patient"
+    )
+    
+    plt.title("Patient Tremor Parameter vs Clinical Cohort Distribution", fontsize=12, fontweight='bold')
+    plt.xlabel("Dominant Tremor Frequency (Hz)", fontsize=10)
+    plt.ylabel("Tremor Amplitude (Displacement Index)", fontsize=10)
+    plt.legend(loc="upper right", title="Diagnosis Profiles")
+    plt.grid(True, linestyle='--', alpha=0.4)
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close()
+    
+    return f"data:image/png;base64,{img_base64}"
+
+CACHED_VIDEO_DATA = {}
+
+def scan_dataset_videos(dataset_dir):
+    """Scan dataset directory for mp4 files and map them to diagnoses based on filenames."""
+    if not os.path.exists(dataset_dir):
+        return {}
+    video_mappings = {}
+    for filename in os.listdir(dataset_dir):
+        if filename.endswith(".mp4"):
+            name_lower = filename.lower()
+            if "parkinson" in name_lower or "resting" in name_lower or "tremor_dominant" in name_lower:
+                diagnosis = "Parkinson's"
+            elif "essential" in name_lower:
+                diagnosis = "Essential Tremor"
+            elif "healthy" in name_lower or "normal" in name_lower or "videoplayback (1)" in name_lower:
+                diagnosis = "Healthy"
+            elif "preview" in name_lower or "other" in name_lower or "movement" in name_lower:
+                diagnosis = "Other Movement Disorders"
+            else:
+                diagnosis = "Other Movement Disorders"
+            video_mappings[filename] = diagnosis
+    return video_mappings
+
+def train_and_save_models():
+    global CACHED_VIDEO_DATA
+    print("[ML Startup] Training ML models on patient videos...")
+    
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    dataset_dir = os.path.join(os.path.dirname(backend_dir), "dataset")
+    
+    video_mappings = scan_dataset_videos(dataset_dir)
+    print(f"[ML Startup] Detected video mappings: {video_mappings}")
+    
+    extracted_data = {}
+    for video_name, diagnosis in video_mappings.items():
+        video_path = os.path.join(dataset_dir, video_name)
+        if not os.path.exists(video_path):
+            continue
+        coords, times, fps = load_video_coordinates(video_path)
+        if coords and len(coords) >= 20:
+            extracted_data[video_name] = {
+                "coords": coords,
+                "times": times,
+                "fps": fps,
+                "diagnosis": diagnosis
+            }
+
+    CACHED_VIDEO_DATA = extracted_data
+
+    if not extracted_data:
+        print("[ML Startup Error] No video data could be extracted. Running fallback.")
+        run_fallback_training()
+        return
+
+    np.random.seed(42)
+    freqs = []
+    amps = []
+    y_severity = []
+    y_category = []
+    y_stage = []
+    
+    for video_name, data in extracted_data.items():
+        coords = np.array(data["coords"])
+        times = np.array(data["times"])
+        fps = data["fps"]
+        diagnosis = data["diagnosis"]
+        
+        mean_coords = np.mean(coords, axis=0)
+        coords_detrend = coords - mean_coords
+        
+        if diagnosis == "Healthy":
+            num_augs = 1200
+        elif diagnosis == "Parkinson's":
+            num_augs = 1200
+        elif diagnosis == "Essential Tremor":
+            num_augs = 1200
+        else:
+            num_augs = 800
+            
+        for _ in range(num_augs):
+            if diagnosis == "Healthy":
+                alpha = np.random.uniform(0.8, 3.0)
+                beta = np.random.uniform(0.1, 1.3)
+            elif diagnosis == "Parkinson's":
+                alpha = np.random.uniform(0.6, 1.5)
+                beta = np.random.uniform(1.2, 8.0)
+            elif diagnosis == "Essential Tremor":
+                alpha = np.random.uniform(0.3, 0.9)
+                beta = np.random.uniform(1.0, 7.0)
+            else:
+                alpha = np.random.uniform(0.4, 2.5)
+                beta = np.random.uniform(0.5, 4.0)
+                
+            aug_times = times * alpha
+            aug_coords = (coords_detrend * beta) + mean_coords
+            aug_coords += np.random.normal(0, 0.001, aug_coords.shape)
+            
+            f, a, _, _ = analyze_tremor(aug_coords.tolist(), aug_times.tolist())
+            if f <= 0 or a <= 0:
+                continue
+                
+            if f < 3.0 or a < 1.5:
+                sev = "Normal"
+            elif 1.5 <= a < 5.0:
+                sev = "Mild"
+            elif 5.0 <= a <= 15.0:
+                sev = "Moderate"
+            else:
+                sev = "Severe"
+                
+            if 4.0 <= f <= 6.5 and (diagnosis == "Parkinson's" or diagnosis == "Other Movement Disorders"):
+                cat = "Parkinsonian Rest Tremor Range (4-6 Hz)"
+            elif 7.5 <= f <= 12.5:
+                cat = "Essential / Physiological Tremor Range (8-12 Hz)"
+            elif diagnosis == "Healthy" or (f < 3.0 and a < 1.5):
+                cat = "Normal / Low Activity"
+            else:
+                cat = "Mixed / Unspecified Tremor"
+                
+            stg = "Stage 0 (No Tremor)"
+            if diagnosis == "Parkinson's" or cat == "Parkinsonian Rest Tremor Range (4-6 Hz)":
+                if sev == "Mild":
+                    stg = "Stage 1 (Unilateral involvement only)"
+                elif sev == "Moderate":
+                    stg = "Stage 2 (Bilateral involvement, without impairment of balance)"
+                elif sev == "Severe":
+                    stg = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
+            
+            freqs.append(f)
+            amps.append(a)
+            y_severity.append(sev)
+            y_category.append(cat)
+            y_stage.append(stg)
+
+    X = np.stack([freqs, amps], axis=1)
+    y = np.column_stack([y_severity, y_category, y_stage])
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    tremor_clf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42)
+    tremor_clf.fit(X_train, y_train)
+    
+    predictions = tremor_clf.predict(X_test)
+    sev_acc = accuracy_score(y_test[:, 0], predictions[:, 0])
+    cat_acc = accuracy_score(y_test[:, 1], predictions[:, 1])
+    stg_acc = accuracy_score(y_test[:, 2], predictions[:, 2])
+    
+    print("\n--- Video-Trained ML Model Evaluation ---")
+    print(f"Severity Classifier Accuracy: {sev_acc * 100:.2f}%")
+    print(f"Category Classifier Accuracy: {cat_acc * 100:.2f}%")
+    print(f"Stage Classifier Accuracy: {stg_acc * 100:.2f}%")
+    print("-----------------------------------------\n")
+    
+    joblib.dump(tremor_clf, TREMOR_MODEL_PATH)
+    print(f"[Video ML] Model trained and saved successfully to {TREMOR_MODEL_PATH}")
+
+def run_fallback_training():
+    np.random.seed(42)
+    freqs = []
+    amps = []
+    y_severity = []
+    y_category = []
+    y_stage = []
+    n_samples = 10000
+    for _ in range(n_samples):
+        f = np.random.uniform(0.0, 15.0)
+        a = np.random.uniform(0.0, 30.0)
+        freqs.append(f)
+        amps.append(a)
+        if f < 3.0 or a < 1.5:
+            sev = "Normal"
+        elif 1.5 <= a < 5.0:
+            sev = "Mild"
+        elif 5.0 <= a <= 15.0:
+            sev = "Moderate"
+        else:
+            sev = "Severe"
+        y_severity.append(sev)
+        if 4.0 <= f <= 6.0:
+            cat = "Parkinsonian Rest Tremor Range (4-6 Hz)"
+        elif 8.0 <= f <= 12.0:
+            cat = "Essential / Physiological Tremor Range (8-12 Hz)"
+        else:
+            cat = "Normal / Low Activity"
+        y_category.append(cat)
+        stg = "Stage 0 (No Tremor)"
+        if cat == "Parkinsonian Rest Tremor Range (4-6 Hz)":
+            if sev == "Mild":
+                stg = "Stage 1 (Unilateral involvement only)"
+            elif sev == "Moderate":
+                stg = "Stage 2 (Bilateral involvement, without impairment of balance)"
+            elif sev == "Severe":
+                stg = "Stage 3 (Mild to moderate bilateral disease; some postural instability)"
+        y_stage.append(stg)
+    X = np.stack([freqs, amps], axis=1)
+    y = np.column_stack([y_severity, y_category, y_stage])
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    tremor_clf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42)
+    tremor_clf.fit(X_train, y_train)
+    joblib.dump(tremor_clf, TREMOR_MODEL_PATH)
+    print("[ML Startup] Fallback multi-output model trained successfully.")
+
+# Always train models on startup to dynamically capture any new video files and populate CACHED_VIDEO_DATA
+train_and_save_models()
+
+tremor_clf = joblib.load(TREMOR_MODEL_PATH)
+
+app = FastAPI(title="Tremor Plot Backend")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+)
+
 class SerialSensorReader:
     def __init__(self):
         self.ser = None
@@ -277,93 +573,6 @@ class SerialSensorReader:
         self.ser = None
 
 serial_reader = SerialSensorReader()
-
-def detect_hand_mediapipe(frame):
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb_frame)
-    
-    if not results.multi_hand_landmarks:
-        return None, None
-        
-    hand_landmarks = results.multi_hand_landmarks[0]
-    index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-    mcp = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
-    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-
-    tx = index_tip.x * 0.7 + mcp.x * 0.2 + wrist.x * 0.1
-    ty = index_tip.y * 0.7 + mcp.y * 0.2 + wrist.y * 0.1
-    
-    h, w, _ = frame.shape
-    cx, cy = int(tx * w), int(ty * h)
-    
-    return hand_landmarks, (cx, cy)
-
-def butter_lowpass_filter(data, cutoff, fs, order=4):
-    nyq = 0.5 * fs
-    if cutoff >= nyq:
-        cutoff = nyq - 0.1
-    normal_cutoff = cutoff / nyq
-    b, a = butter(order, normal_cutoff, btype='low', analog=False)
-    y = filtfilt(b, a, data)
-    return y
-
-def analyze_tremor(time_series, timestamps):
-    if len(time_series) < 20:
-        return 0.0, 0.0, "Normal / Insufficient Data", "Normal"
-        
-    t_uniform = np.linspace(timestamps[0], timestamps[-1], len(timestamps))
-
-    x_coords = np.array([pt[0] for pt in time_series])
-    y_coords = np.array([pt[1] for pt in time_series])
-    
-    x_interp = np.interp(t_uniform, timestamps, x_coords)
-    y_interp = np.interp(t_uniform, timestamps, y_coords)
-    
-    x_detrend = x_interp - np.mean(x_interp)
-    y_detrend = y_interp - np.mean(y_interp)
-    
-    displacement = np.sqrt(x_detrend**2 + y_detrend**2)
-    
-    fs = TARGET_FPS
-    try:
-        filtered_signal = butter_lowpass_filter(displacement, cutoff=12.0, fs=fs, order=2)
-        window = np.hanning(len(filtered_signal))
-        windowed_signal = filtered_signal * window
-        
-        n = len(windowed_signal)
-        fft_vals = np.fft.fft(windowed_signal)
-        fft_freqs = np.fft.fftfreq(n, d=dt)
-        
-        pos_mask = fft_freqs >= 0
-        freqs = fft_freqs[pos_mask]
-        magnitude = (2.0 / n) * np.abs(fft_vals[pos_mask])
-        
-        valid_mask = freqs >= 1.5
-        valid_freqs = freqs[valid_mask]
-        valid_mag = magnitude[valid_mask]
-        
-        if len(valid_freqs) == 0:
-            return 0.0, 0.0, "Normal", "Normal"
-            
-        peak_idx = np.argmax(valid_mag)
-        dominant_frequency = valid_freqs[peak_idx]
-        peak_amplitude = valid_mag[peak_idx]
-    except Exception as e:
-        print(f"DSP Error: {e}")
-        return 0.0, 0.0, "Normal / Calculation Error", "Normal"
-    scaled_amp = peak_amplitude * 1000
-
-    features = np.array([[float(dominant_frequency), float(scaled_amp)]])
-    try:
-        preds = tremor_clf.predict(features)[0]
-        severity = preds[0]
-        category = preds[1]
-    except Exception as e:
-        print(f"[ML Prediction Error] {e}")
-        severity = "Normal"
-        category = "Normal / Low Activity"
-        
-    return float(dominant_frequency), float(scaled_amp), category, severity
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -592,12 +801,20 @@ async def upload_video(file: UploadFile = File(...)):
             print(f"[ML Stage Prediction Error] {e}")
             stage = "Stage 0 (No Tremor)"
             
+        # Generate the dynamic base64 prediction plot
+        try:
+            visualization_b64 = generate_prediction_plot(frequency, amplitude, category)
+        except Exception as e:
+            print(f"[Visualization Generation Error] {e}")
+            visualization_b64 = ""
+            
         return {
             "frequency": round(frequency, 2),
             "amplitude": round(amplitude, 2),
             "category": category,
             "severity": severity,
-            "stage": stage
+            "stage": stage,
+            "visualization": visualization_b64
         }
     except Exception as e:
         print(f"Error processing video upload: {e}")
