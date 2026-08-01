@@ -981,12 +981,6 @@ function App() {
                 </div>
               </div>
 
-              {analysisResult.visualization && (
-                <div className="border border-slate-800/80 rounded-xl overflow-hidden bg-[#070b19]">
-                  <img src={analysisResult.visualization} alt="Cohort Distribution Map" className="w-full h-auto object-contain" />
-                </div>
-              )}
-
               <div className="text-xs text-slate-400 leading-relaxed bg-purple-950/15 border border-purple-500/10 p-3 rounded-lg flex items-start space-x-2">
                 <AlertTriangle className="h-4.5 w-4.5 text-purple-400 flex-shrink-0 mt-0.5" />
                 <p>

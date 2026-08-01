@@ -452,10 +452,15 @@ def run_fallback_training():
     joblib.dump(tremor_clf, TREMOR_MODEL_PATH)
     print("[ML Startup] Fallback multi-output model trained successfully.")
 
-# Always train models on startup to dynamically capture any new video files and populate CACHED_VIDEO_DATA
-train_and_save_models()
-
-tremor_clf = joblib.load(TREMOR_MODEL_PATH)
+if os.path.exists(TREMOR_MODEL_PATH):
+    try:
+        tremor_clf = joblib.load(TREMOR_MODEL_PATH)
+    except Exception:
+        train_and_save_models()
+        tremor_clf = joblib.load(TREMOR_MODEL_PATH)
+else:
+    train_and_save_models()
+    tremor_clf = joblib.load(TREMOR_MODEL_PATH)
 
 app = FastAPI(title="Tremor Plot Backend")
 app.add_middleware(
@@ -792,10 +797,11 @@ async def upload_video(file: UploadFile = File(...)):
         else:
             frequency, amplitude, category, severity = 0.0, 0.0, "Insufficient Data", "Normal"
             
-        # Predict stage using ML model
         try:
             features = np.array([[float(frequency), float(amplitude)]])
             preds = tremor_clf.predict(features)[0]
+            severity = preds[0]
+            category = preds[1]
             stage = preds[2]
         except Exception as e:
             print(f"[ML Stage Prediction Error] {e}")
