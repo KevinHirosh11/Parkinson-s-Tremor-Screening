@@ -15,7 +15,6 @@ def evaluate_saved_model():
         print(f"[Error] Trained model file not found at {model_path}. Please train the model first.")
         return
 
-    # Try evaluating using video-derived feature distribution
     try:
         from run import load_video_coordinates, analyze_tremor
         dataset_dir = os.path.join(os.path.dirname(backend_dir), "dataset")
@@ -83,7 +82,7 @@ def evaluate_saved_model():
                 if f <= 0 or a <= 0:
                     continue
                     
-                if f < 3.0 or a < 1.5:
+                if a < 1.5:
                     sev = "Normal"
                 elif 1.5 <= a < 5.0:
                     sev = "Mild"
